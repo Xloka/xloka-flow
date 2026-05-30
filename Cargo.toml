@@ -1,0 +1,51 @@
+[package]
+name = "xloka-flow"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "xloka-flow"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Analytical Engine (bundled = compiles DuckDB from source, no system lib needed)
+duckdb = { version = "1", features = ["bundled"] }
+
+# MySQL async driver with first-party binlog replication support
+mysql_async = { version = "0.37", features = ["binlog"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# REST API
+axum = { version = "0.8", features = ["json"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower = "0.5"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# SQL parsing (SELECT-only guard in API)
+sqlparser = "0.62"
+
+# Error handling & logging
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+rand = "0.9"
+
+# Configuration (env vars + config.toml)
+config = "0.14"
+dotenvy = "0.15"
+
+# Async trait support
+async-trait = "0.1"
