@@ -31,19 +31,12 @@ struct CachedSchema {
 
 pub struct StoreWriter {
     settings: Arc<Settings>,
+    conn: Arc<std::sync::Mutex<Connection>>,
 }
 
 impl StoreWriter {
-    pub fn new(settings: Arc<Settings>) -> Self {
-        StoreWriter { settings }
-    }
-
-    /// Open the write connection.
-    fn open_write_conn(&self) -> FlowResult<Connection> {
-        let conn = Connection::open(&self.settings.db_path)?;
-        // Note: DuckDB does not support PRAGMA (SQLite-only). Busy timeout is
-        // handled by DuckDB's internal locking. No extra config needed.
-        Ok(conn)
+    pub fn new(settings: Arc<Settings>, conn: Arc<std::sync::Mutex<Connection>>) -> Self {
+        StoreWriter { settings, conn }
     }
 
     /// Run the writer loop.  Consumes the receiver end of the CDC channel.
@@ -54,13 +47,10 @@ impl StoreWriter {
     /// batch sizes ≤ 10k rows.
     pub async fn run(self, mut rx: mpsc::Receiver<RowOp>) -> FlowResult<()> {
         info!(
-            "StoreWriter starting — db={}, batch_size={}, flush_interval={}ms",
-            self.settings.db_path,
+            "StoreWriter starting — batch_size={}, flush_interval={}ms",
             self.settings.batch_size,
             self.settings.flush_interval_ms
         );
-
-        let conn = self.open_write_conn()?;
 
         // Cached table schemas so we can do schema diffing without querying DuckDB every time.
         let mut schema_cache: HashMap<String, CachedSchema> = HashMap::new();
@@ -80,6 +70,7 @@ impl StoreWriter {
                 // Timeout elapsed — flush whatever we have.
                 Err(_) => {
                     if !batch.is_empty() {
+                        let conn = self.conn.lock().unwrap();
                         if let Err(e) = flush_batch(&conn, &mut batch, &mut schema_cache) {
                             error!("Flush error: {e}");
                         }
@@ -90,6 +81,7 @@ impl StoreWriter {
                 Ok(None) => {
                     info!("CDC channel closed — flushing final batch and shutting down.");
                     if !batch.is_empty() {
+                        let conn = self.conn.lock().unwrap();
                         if let Err(e) = flush_batch(&conn, &mut batch, &mut schema_cache) {
                             error!("Final flush error: {e}");
                         }
@@ -103,6 +95,7 @@ impl StoreWriter {
                     if matches!(op, RowOp::SchemaChange(_)) {
                         // Flush any pending rows first.
                         if !batch.is_empty() {
+                            let conn = self.conn.lock().unwrap();
                             if let Err(e) =
                                 flush_batch(&conn, &mut batch, &mut schema_cache)
                             {
@@ -111,6 +104,7 @@ impl StoreWriter {
                             last_flush = Instant::now();
                         }
                         if let RowOp::SchemaChange(schema) = &op {
+                            let conn = self.conn.lock().unwrap();
                             if let Err(e) =
                                 reconcile_schema(&conn, schema, &mut schema_cache)
                             {
@@ -120,6 +114,7 @@ impl StoreWriter {
                     } else {
                         batch.push(op);
                         if batch.len() >= self.settings.batch_size {
+                            let conn = self.conn.lock().unwrap();
                             if let Err(e) =
                                 flush_batch(&conn, &mut batch, &mut schema_cache)
                             {
@@ -161,6 +156,25 @@ fn reconcile_schema(
             info!("Created table '{table}'");
         }
         Some(cached) => {
+            // Check for dropped columns and type mismatches
+            let incoming_names: std::collections::HashSet<&str> =
+                incoming.columns.iter().map(|c| c.name.as_str()).collect();
+                
+            let mut incoming_types = std::collections::HashMap::new();
+            for col in &incoming.columns {
+                incoming_types.insert(col.name.as_str(), &col.duck_type);
+            }
+
+            for cached_col in &cached.columns {
+                if !incoming_names.contains(cached_col.name.as_str()) {
+                    warn!("Column '{}.{}' was dropped in MySQL, but will be retained in DuckDB", table, cached_col.name);
+                } else if let Some(inc_type) = incoming_types.get(cached_col.name.as_str()) {
+                    if **inc_type != cached_col.duck_type {
+                        warn!("Type mismatch for column '{}.{}': DuckDB has {:?}, but MySQL now has {:?}. Safe cast will be attempted on writes.", table, cached_col.name, cached_col.duck_type, inc_type);
+                    }
+                }
+            }
+
             // Table exists — find new columns and ALTER TABLE ADD COLUMN for each.
             let existing_names: std::collections::HashSet<&str> =
                 cached.columns.iter().map(|c| c.name.as_str()).collect();
@@ -174,7 +188,7 @@ fn reconcile_schema(
 
             for col in &new_cols {
                 let sql = format!(
-                    "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {} {}",
+                    "ALTER TABLE \"{table}\" ADD COLUMN IF NOT EXISTS \"{}\" {}",
                     col.name,
                     col.duck_type.to_ddl()
                 );
@@ -260,7 +274,7 @@ fn apply_upsert(
         .unwrap_or_default();
 
     let cols: Vec<&String> = row.keys().collect();
-    let col_list = cols.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", ");
+    let col_list = cols.iter().map(|c| format!("\"{}\"", c)).collect::<Vec<_>>().join(", ");
 
     let values_sql = cols
         .iter()
@@ -275,26 +289,26 @@ fn apply_upsert(
             .filter(|c| !pk_cols.contains(*c))
             .map(|c| {
                 let v = row.get(*c).map(|v| v.to_string()).unwrap_or("NULL".into());
-                format!("{c} = {v}")
+                format!("\"{c}\" = {v}")
             })
             .collect::<Vec<_>>()
             .join(", ");
 
-        let conflict_cols = pk_cols.join(", ");
+        let conflict_cols = pk_cols.iter().map(|c| format!("\"{}\"", c)).collect::<Vec<_>>().join(", ");
         if update_set.is_empty() {
             // Only PK columns — INSERT OR IGNORE
             format!(
-                "INSERT INTO {table} ({col_list}) VALUES ({values_sql}) ON CONFLICT DO NOTHING"
+                "INSERT INTO \"{table}\" ({col_list}) VALUES ({values_sql}) ON CONFLICT DO NOTHING"
             )
         } else {
             format!(
-                "INSERT INTO {table} ({col_list}) VALUES ({values_sql}) \
+                "INSERT INTO \"{table}\" ({col_list}) VALUES ({values_sql}) \
                  ON CONFLICT ({conflict_cols}) DO UPDATE SET {update_set}"
             )
         }
     } else {
         // No known PK — plain INSERT IGNORE
-        format!("INSERT INTO {table} ({col_list}) VALUES ({values_sql}) ON CONFLICT DO NOTHING")
+        format!("INSERT INTO \"{table}\" ({col_list}) VALUES ({values_sql}) ON CONFLICT DO NOTHING")
     };
 
     debug!("UPSERT: {sql}");
@@ -317,11 +331,11 @@ fn apply_delete(
 
     let where_clause = pk_values
         .iter()
-        .map(|(k, v)| format!("{k} = {v}"))
+        .map(|(k, v)| format!("\"{k}\" = {v}"))
         .collect::<Vec<_>>()
         .join(" AND ");
 
-    let sql = format!("DELETE FROM {table} WHERE {where_clause}");
+    let sql = format!("DELETE FROM \"{table}\" WHERE {where_clause}");
     debug!("DELETE: {sql}");
     conn.execute_batch(&sql)?;
     Ok(())

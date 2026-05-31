@@ -3,3 +3,6 @@
 *.log
 *.err
 *.db.wal
+.env
+scripts/
+checkpoint.json

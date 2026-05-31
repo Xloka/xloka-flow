@@ -17,7 +17,7 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::cdc::{CdcSource, RowOp};
-use crate::error::{FlowError, FlowResult};
+use crate::error::FlowResult;
 use crate::Checkpoint;
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -49,7 +49,7 @@ impl LiveCdc {
 
 #[async_trait]
 impl CdcSource for LiveCdc {
-    async fn run(self, _tx: mpsc::Sender<RowOp>) -> FlowResult<()> {
+    async fn run(self, tx: mpsc::Sender<RowOp>) -> FlowResult<()> {
         info!(
             "LiveCdc: connecting to MySQL at {}",
             mask_password(&self.config.mysql_url)
@@ -113,27 +113,214 @@ impl CdcSource for LiveCdc {
         }
 
         // Load checkpoint
-        let checkpoint = Checkpoint::load(&self.config.checkpoint_path);
+        let mut checkpoint = Checkpoint::load(&self.config.checkpoint_path);
         info!("LiveCdc: resuming from checkpoint: {:?}", checkpoint);
 
-        pool.disconnect().await?;
+        // ── 1.5. Initial Schema Sync ─────────────────────────────────────────
+        let filter_tables = if self.config.filter_tables.is_empty() {
+            // Get all tables in the database
+            let rows: Vec<String> = conn.query("SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE()").await?;
+            rows
+        } else {
+            self.config.filter_tables.clone()
+        };
 
-        // ── 2. Full binlog streaming is not yet implemented ───────────────────
-        //
-        // To implement: use `mysql_async::BinlogStream` (if available at this
-        // API version) or a compatible replication stream crate.
-        //
-        // The pipeline infrastructure is complete:
-        //   • CheckPoint save/load ✓
-        //   • Channel to StoreWriter ✓
-        //   • RowOp / TableSchema types ✓
-        //
-        // Use `xloka-flow sync --mock` for full end-to-end testing.
-        Err(FlowError::other(
-            "Live CDC binlog streaming is not fully implemented yet. \
-             Please use `xloka-flow sync --mock` (or `run-all --mock`) for \
-             simulated end-to-end testing.",
-        ))
+        let mut table_schemas = HashMap::new();
+        for table_name in &filter_tables {
+            if let Some(schema) = fetch_table_schema(&pool, table_name).await? {
+                table_schemas.insert(table_name.clone(), schema.clone());
+                if let Err(e) = tx.send(RowOp::SchemaChange(schema)).await {
+                    warn!("Failed to send SchemaChange for {}: {}", table_name, e);
+                }
+            } else {
+                warn!("LiveCdc: schema for table '{}' not found in database.", table_name);
+            }
+        }
+
+        // ── 2. Full binlog streaming ──────────────────────────────────────────
+        use mysql_async::BinlogStreamRequest;
+        use mysql_common::binlog::events::{EventData, RowsEventData};
+        use futures::StreamExt;
+
+        let server_id = self.config.server_id;
+        let mut request = BinlogStreamRequest::new(server_id);
+        
+        if let Some(ref file) = checkpoint.filename {
+            let mut req = request.with_filename(file.as_bytes());
+            if let Some(pos) = checkpoint.position {
+                req = req.with_pos(pos);
+            }
+            request = req;
+        }
+
+        info!("LiveCdc: starting binlog stream...");
+        let mut stream = conn.get_binlog_stream(request).await?;
+
+        use std::collections::HashMap;
+        let mut table_maps = HashMap::new();
+
+        fn value_from_mysql(val: mysql_async::Value) -> crate::cdc::Value {
+            use mysql_async::Value as MyVal;
+            use crate::cdc::Value as OurVal;
+            match val {
+                MyVal::NULL => OurVal::Null,
+                MyVal::Bytes(b) => {
+                    // Try to parse as UTF-8 string, fallback to bytes
+                    if let Ok(s) = String::from_utf8(b.clone()) {
+                        OurVal::Text(s)
+                    } else {
+                        OurVal::Bytes(b)
+                    }
+                }
+                MyVal::Int(i) => OurVal::Integer(i),
+                MyVal::UInt(u) => OurVal::Integer(u as i64),
+                MyVal::Float(f) => OurVal::Float(f as f64),
+                MyVal::Double(d) => OurVal::Float(d),
+                MyVal::Date(y, m, d, h, mn, s, _ms) => {
+                    let text = format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, m, d, h, mn, s);
+                    OurVal::Text(text)
+                }
+                MyVal::Time(is_neg, d, h, m, s, _ms) => {
+                    let sign = if is_neg { "-" } else { "" };
+                    let text = format!("{}{:02}:{:02}:{:02}", sign, d * 24 + h as u32, m, s);
+                    OurVal::Text(text)
+                }
+            }
+        }
+
+        fn parse_row(binlog_row: mysql_common::binlog::row::BinlogRow, schema: Option<&crate::cdc::TableSchema>) -> HashMap<String, crate::cdc::Value> {
+            use std::convert::TryInto;
+            let row: mysql_async::Row = binlog_row.try_into().unwrap();
+            let mut map = HashMap::new();
+            for (idx, _col) in row.columns_ref().iter().enumerate() {
+                let name = if let Some(s) = schema {
+                    if idx < s.columns.len() {
+                        s.columns[idx].name.clone()
+                    } else {
+                        format!("@{}", idx)
+                    }
+                } else {
+                    format!("@{}", idx)
+                };
+                let val = row.get::<mysql_async::Value, _>(idx).unwrap_or(mysql_async::Value::NULL);
+                map.insert(name, value_from_mysql(val));
+            }
+            map
+        }
+
+        while let Some(event) = stream.next().await {
+            let event = event?;
+            
+            // Checkpoint tracking
+            let header = event.header();
+            let pos = header.log_pos();
+
+            if let Ok(Some(event_data)) = event.read_data() {
+                match event_data {
+                    EventData::TableMapEvent(tm) => {
+                        table_maps.insert(tm.table_id(), tm.into_owned());
+                    }
+                    EventData::RowsEvent(RowsEventData::WriteRowsEvent(ev)) => {
+                        if let Some(tm) = table_maps.get(&ev.table_id()) {
+                            let table_name = String::from_utf8_lossy(tm.table_name_raw()).to_string();
+                            if self.config.filter_tables.is_empty() || self.config.filter_tables.contains(&table_name) {
+                                for row_result in ev.rows(tm) {
+                                    if let Ok((_, Some(after_row))) = row_result {
+                                        let schema = table_schemas.get(&table_name);
+                                        let row_map = parse_row(after_row, schema);
+                                        let op = RowOp::Insert {
+                                            table: table_name.clone(),
+                                            row: row_map,
+                                        };
+                                        if let Err(e) = tx.send(op).await {
+                                            warn!("LiveCdc failed to send Insert: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    EventData::RowsEvent(RowsEventData::UpdateRowsEvent(ev)) => {
+                        if let Some(tm) = table_maps.get(&ev.table_id()) {
+                            let table_name = String::from_utf8_lossy(tm.table_name_raw()).to_string();
+                            if self.config.filter_tables.is_empty() || self.config.filter_tables.contains(&table_name) {
+                                for row_result in ev.rows(tm) {
+                                    if let Ok((Some(before_row), Some(after_row))) = row_result {
+                                        let schema = table_schemas.get(&table_name);
+                                        let before_map = parse_row(before_row, schema);
+                                        let after_map = parse_row(after_row, schema);
+                                        let op = RowOp::Update {
+                                            table: table_name.clone(),
+                                            before: Some(before_map),
+                                            after: after_map,
+                                        };
+                                        if let Err(e) = tx.send(op).await {
+                                            warn!("LiveCdc failed to send Update: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    EventData::RowsEvent(RowsEventData::DeleteRowsEvent(ev)) => {
+                        if let Some(tm) = table_maps.get(&ev.table_id()) {
+                            let table_name = String::from_utf8_lossy(tm.table_name_raw()).to_string();
+                            if self.config.filter_tables.is_empty() || self.config.filter_tables.contains(&table_name) {
+                                for row_result in ev.rows(tm) {
+                                    if let Ok((Some(before_row), _)) = row_result {
+                                        let schema = table_schemas.get(&table_name);
+                                        let row_map = parse_row(before_row, schema);
+                                        // Delete requires pk_values, we just pass the full row and let StoreWriter filter it.
+                                        let op = RowOp::Delete {
+                                            table: table_name.clone(),
+                                            pk_values: row_map,
+                                        };
+                                        if let Err(e) = tx.send(op).await {
+                                            warn!("LiveCdc failed to send Delete: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    EventData::RotateEvent(ev) => {
+                        let file_name = String::from_utf8_lossy(ev.name_raw()).into_owned();
+                        checkpoint.filename = Some(file_name);
+                        checkpoint.position = Some(pos as u64);
+                        let _ = checkpoint.save(&self.config.checkpoint_path);
+                    }
+                    EventData::XidEvent(_) => {
+                        checkpoint.position = Some(pos as u64);
+                        let _ = checkpoint.save(&self.config.checkpoint_path);
+                    }
+                    EventData::QueryEvent(ev) => {
+                        checkpoint.position = Some(pos as u64);
+                        let _ = checkpoint.save(&self.config.checkpoint_path);
+                        
+                        let sql = ev.query().into_owned();
+                        let sql_upper = sql.trim().to_uppercase();
+                        if sql_upper.starts_with("ALTER TABLE") {
+                            let parts: Vec<&str> = sql.split_whitespace().collect();
+                            if parts.len() > 2 {
+                                let raw_table = parts[2].trim_matches(|c| c == '`' || c == '"' || c == '\'');
+                                if self.config.filter_tables.is_empty() || self.config.filter_tables.contains(&raw_table.to_string()) {
+                                    info!("Detected ALTER TABLE for {}, refreshing schema...", raw_table);
+                                    if let Ok(Some(schema)) = fetch_table_schema(&pool, raw_table).await {
+                                        table_schemas.insert(raw_table.to_string(), schema.clone());
+                                        if let Err(e) = tx.send(RowOp::SchemaChange(schema)).await {
+                                            warn!("Failed to send SchemaChange for {}: {}", raw_table, e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -153,4 +340,36 @@ fn mask_password(url: &str) -> String {
         }
     }
     url.to_string()
+}
+
+async fn fetch_table_schema(
+    pool: &mysql_async::Pool,
+    table_name: &str,
+) -> FlowResult<Option<crate::cdc::TableSchema>> {
+    use mysql_async::prelude::*;
+    let mut conn = pool.get_conn().await?;
+    let sql = format!(
+        "SELECT column_name, column_type, is_nullable, column_key \
+         FROM information_schema.columns \
+         WHERE table_name = '{}' AND table_schema = DATABASE() \
+         ORDER BY ordinal_position",
+        table_name
+    );
+    let rows: Vec<(String, String, String, String)> = conn.query(sql).await?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    let mut columns = Vec::new();
+    for (col_name, col_type, is_nullable, col_key) in rows {
+        columns.push(crate::cdc::ColumnDef {
+            name: col_name,
+            duck_type: crate::cdc::DuckDbType::from_mysql(&col_type),
+            nullable: is_nullable.eq_ignore_ascii_case("YES"),
+            is_primary_key: col_key.eq_ignore_ascii_case("PRI"),
+        });
+    }
+    Ok(Some(crate::cdc::TableSchema {
+        table_name: table_name.to_string(),
+        columns,
+    }))
 }

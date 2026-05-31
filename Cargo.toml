@@ -2,10 +2,19 @@
 name = "xloka-flow"
 version = "0.1.0"
 edition = "2021"
+repository = "https://github.com/xloka/xloka-flow"
 
 [[bin]]
 name = "xloka-flow"
 path = "src/main.rs"
+
+[[bin]]
+name = "seed"
+path = "src/bin/seed.rs"
+
+[[bin]]
+name = "test_binlog"
+path = "src/bin/test_binlog.rs"
 
 [dependencies]
 # Async runtime
@@ -16,6 +25,8 @@ duckdb = { version = "1", features = ["bundled"] }
 
 # MySQL async driver with first-party binlog replication support
 mysql_async = { version = "0.37", features = ["binlog"] }
+mysql_common = "0.37"
+futures = "0.3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -23,7 +34,7 @@ serde_json = "1"
 
 # REST API
 axum = { version = "0.8", features = ["json"] }
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
 tower = "0.5"
 
 # CLI
@@ -49,3 +60,8 @@ dotenvy = "0.15"
 
 # Async trait support
 async-trait = "0.1"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

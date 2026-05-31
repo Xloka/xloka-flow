@@ -116,20 +116,21 @@ impl TableSchema {
             .iter()
             .map(|c| {
                 let nullable = if c.nullable { "" } else { " NOT NULL" };
-                format!("    {} {}{}", c.name, c.duck_type.to_ddl(), nullable)
+                format!("    \"{}\" {}{}", c.name, c.duck_type.to_ddl(), nullable)
             })
             .collect::<Vec<_>>()
             .join(",\n");
 
         let pks = self.primary_keys();
         let pk_clause = if !pks.is_empty() {
-            format!(",\n    PRIMARY KEY ({})", pks.join(", "))
+            let quoted_pks = pks.iter().map(|k| format!("\"{}\"", k)).collect::<Vec<_>>().join(", ");
+            format!(",\n    PRIMARY KEY ({})", quoted_pks)
         } else {
             String::new()
         };
 
         format!(
-            "CREATE TABLE IF NOT EXISTS {} (\n{}{}\n)",
+            "CREATE TABLE IF NOT EXISTS \"{}\" (\n{}{}\n)",
             self.table_name, cols, pk_clause
         )
     }

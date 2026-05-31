@@ -1,24 +1,16 @@
-//! xloka-flow — MySQL CDC → DuckDB OLAP daemon.
-//!
-//! Usage:
-//!   xloka-flow sync            # Live MySQL CDC → DuckDB
-//!   xloka-flow sync --mock     # Simulated CDC → DuckDB (no MySQL needed)
-//!   xloka-flow api             # Axum HTTP API over existing DuckDB file
-//!   xloka-flow run-all         # CDC + API concurrently (live MySQL)
-//!   xloka-flow run-all --mock  # CDC + API concurrently (simulated)
-
 use clap::{Parser, Subcommand};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use xloka_flow::{
     api,
-    cdc::{mock::MockCdc, mock::MockConfig, CdcSource},
+    cdc::{live::{LiveCdc, LiveCdcConfig}, CdcSource},
     store::StoreWriter,
     AppState, Settings,
+    accounts::{AccountManager, AccountState},
 };
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────
@@ -27,7 +19,7 @@ use xloka_flow::{
 #[command(
     name = "xloka-flow",
     version,
-    about = "MySQL CDC → DuckDB OLAP offload daemon",
+    about = "MySQL CDC → DuckDB OLAP fast replicator",
     long_about = None,
 )]
 struct Cli {
@@ -37,16 +29,18 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Stream CDC events into DuckDB.
+    /// OSS CLI Mode: Sync a single MySQL database to a local DuckDB file natively.
     Sync {
-        /// Use the built-in event simulator instead of a live MySQL connection.
+        /// The MySQL connection URL (e.g. mysql://user:pass@localhost:3306/db)
         #[arg(long)]
-        mock: bool,
+        mysql: String,
+        
+        /// The local DuckDB file path to create/update
+        #[arg(long, default_value = "local.db")]
+        db: String,
     },
-    /// Serve the Axum HTTP query API.
-    Api,
-    /// Run CDC + API concurrently under one tokio runtime.
-    RunAll {
+    /// SaaS Mode: Run the Multi-Tenant REST API server and Account Manager.
+    Serve {
         /// Use the built-in event simulator instead of a live MySQL connection.
         #[arg(long)]
         mock: bool,
@@ -57,11 +51,10 @@ enum Command {
 
 #[tokio::main]
 async fn main() {
-    // Bootstrap logging.
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("xloka_flow=debug,info")),
+                .unwrap_or_else(|_| EnvFilter::new("xloka_flow=info")),
         )
         .with_target(false)
         .compact()
@@ -78,9 +71,8 @@ async fn main() {
     };
 
     let result = match cli.command {
-        Command::Sync { mock } => run_sync(settings, mock).await,
-        Command::Api => run_api(settings).await,
-        Command::RunAll { mock } => run_all(settings, mock).await,
+        Command::Sync { mysql, db } => run_sync(settings, mysql, db).await,
+        Command::Serve { mock } => run_serve(settings, mock).await,
     };
 
     if let Err(e) = result {
@@ -91,70 +83,60 @@ async fn main() {
 
 // ─── Subcommand implementations ───────────────────────────────────────────────
 
-async fn run_sync(settings: Settings, mock: bool) -> xloka_flow::error::FlowResult<()> {
-    let settings = Arc::new(settings);
+async fn run_sync(settings: Settings, mysql_url: String, db_path: String) -> xloka_flow::error::FlowResult<()> {
+    info!("Starting xloka-flow in OSS SYNC mode...");
+    info!("Source: {}", mysql_url);
+    info!("Destination: {}", db_path);
+
+    let conn = duckdb::Connection::open(&db_path)?;
+    let shared_conn = Arc::new(Mutex::new(conn));
     let (tx, rx) = mpsc::channel(1_000);
-
-    // Spawn writer.
-    let writer = StoreWriter::new(Arc::clone(&settings));
-    let writer_task = tokio::spawn(async move { writer.run(rx).await });
-
-    // Run CDC source.
-    if mock {
-        info!("Starting MOCK CDC source");
-        let cdc = MockCdc::new(MockConfig::default());
-        cdc.run(tx).await?;
-    } else {
-        info!("Starting LIVE MySQL CDC source (url={})", settings.mysql_url);
-        use xloka_flow::cdc::live::{LiveCdc, LiveCdcConfig};
-        let cdc = LiveCdc::new(LiveCdcConfig {
-            mysql_url: settings.mysql_url.clone(),
-            checkpoint_path: settings.checkpoint_path.clone(),
-            filter_databases: vec![],
-            filter_tables: vec![],
-            server_id: 42,
-        });
-        cdc.run(tx).await?;
-    }
-
-    // Wait for writer to finish draining.
-    writer_task.await.map_err(|e| {
-        xloka_flow::error::FlowError::other(format!("Writer task panicked: {e}"))
-    })??;
-
-    Ok(())
-}
-
-async fn run_api(settings: Settings) -> xloka_flow::error::FlowResult<()> {
-    let addr: SocketAddr = settings.listen.parse().map_err(|e| {
-        xloka_flow::error::FlowError::other(format!("Invalid listen address: {e}"))
-    })?;
-
-    let state = AppState::new(settings);
-    let router = api::router(state);
-
-    info!("xloka-flow API listening on http://{addr}");
-    let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
-        xloka_flow::error::FlowError::other(format!("Failed to bind {addr}: {e}"))
-    })?;
-
-    axum::serve(listener, router).await.map_err(|e| {
-        xloka_flow::error::FlowError::other(format!("Axum serve error: {e}"))
-    })?;
-
-    Ok(())
-}
-
-async fn run_all(settings: Settings, mock: bool) -> xloka_flow::error::FlowResult<()> {
-    let settings = Arc::new(settings);
-    let (tx, rx) = mpsc::channel(1_000);
-
-    // ── Writer task ──
-    let writer_settings = Arc::clone(&settings);
-    let writer_handle = tokio::spawn(async move {
-        let writer = StoreWriter::new(writer_settings);
-        writer.run(rx).await
+    
+    // Spawn writer
+    let writer_settings = Arc::new(settings);
+    let writer_conn = Arc::clone(&shared_conn);
+    let writer_task = tokio::spawn(async move {
+        let writer = StoreWriter::new(writer_settings, writer_conn);
+        let _ = writer.run(rx).await;
     });
+    
+    // Spawn CDC
+    let cdc = LiveCdc::new(LiveCdcConfig {
+        mysql_url,
+        checkpoint_path: format!("{}_checkpoint.json", db_path),
+        filter_databases: vec![],
+        filter_tables: vec![],
+        server_id: 42 + rand::random::<u32>() % 1000,
+    });
+    
+    let cdc_task = tokio::spawn(async move { let _ = cdc.run(tx).await; });
+
+    tokio::signal::ctrl_c().await.unwrap();
+    info!("Ctrl-C received, shutting down…");
+    cdc_task.abort();
+    writer_task.abort();
+    
+    info!("xloka-flow shut down cleanly.");
+    Ok(())
+}
+
+async fn run_serve(settings: Settings, _mock: bool) -> xloka_flow::error::FlowResult<()> {
+    info!("Starting xloka-flow in SaaS SERVE mode...");
+    let settings = Arc::new(settings);
+    let manager = AccountManager::new("accounts.json".to_string(), Arc::clone(&settings));
+    
+    // Ensure data dir exists
+    std::fs::create_dir_all("data").unwrap_or_default();
+    
+    let persisted_accounts = manager.load_persisted();
+    info!("Loaded {} accounts from accounts.json", persisted_accounts.len());
+    
+    for account in persisted_accounts {
+        info!("Initializing account {} ({})", account.id, account.name);
+        if let Err(e) = manager.spawn_and_add_account(account) {
+            error!("Failed to spawn account: {}", e);
+        }
+    }
 
     // ── API task ──
     let api_settings = Arc::clone(&settings);
@@ -162,7 +144,7 @@ async fn run_all(settings: Settings, mock: bool) -> xloka_flow::error::FlowResul
         let addr: SocketAddr = api_settings.listen.parse().unwrap_or_else(|_| {
             "0.0.0.0:3000".parse().unwrap()
         });
-        let state = AppState::new((*api_settings).clone());
+        let state = AppState::new((*api_settings).clone(), manager);
         let router = api::router(state);
 
         info!("xloka-flow API listening on http://{addr}");
@@ -176,50 +158,11 @@ async fn run_all(settings: Settings, mock: bool) -> xloka_flow::error::FlowResul
         }
     });
 
-    // ── CDC task ──
-    if mock {
-        info!("Starting MOCK CDC source (run-all mode)");
-        let cdc = MockCdc::new(MockConfig::default());
-        tokio::select! {
-            res = cdc.run(tx) => {
-                if let Err(e) = res {
-                    error!("MockCdc error: {e}");
-                }
-            }
-            _ = tokio::signal::ctrl_c() => {
-                info!("Ctrl-C received, shutting down…");
-            }
-        }
-    } else {
-        info!("Starting LIVE MySQL CDC source (run-all mode, url={})", settings.mysql_url);
-        use xloka_flow::cdc::live::{LiveCdc, LiveCdcConfig};
-        let cdc = LiveCdc::new(LiveCdcConfig {
-            mysql_url: settings.mysql_url.clone(),
-            checkpoint_path: settings.checkpoint_path.clone(),
-            filter_databases: vec![],
-            filter_tables: vec![],
-            server_id: 42,
-        });
-        tokio::select! {
-            res = cdc.run(tx) => {
-                if let Err(e) = res {
-                    error!("LiveCdc error: {e}");
-                }
-            }
-            _ = tokio::signal::ctrl_c() => {
-                info!("Ctrl-C received, shutting down…");
-            }
-        }
-    }
-
-    // Let writer drain then wait.
-    match writer_handle.await {
-        Ok(Ok(())) => info!("StoreWriter finished cleanly."),
-        Ok(Err(e)) => error!("StoreWriter exited with error: {e}"),
-        Err(e) => error!("StoreWriter task panicked: {e}"),
-    }
+    // Wait for shutdown signal
+    tokio::signal::ctrl_c().await.unwrap();
+    info!("Ctrl-C received, shutting down…");
     api_handle.abort();
-
-    info!("xloka-flow shut down.");
+    
+    info!("xloka-flow shut down cleanly.");
     Ok(())
 }
