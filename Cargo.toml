@@ -2,6 +2,7 @@
 name = "xloka-flow"
 version = "0.1.0"
 edition = "2021"
+description = "High-performance Analytics DB and API Server using DuckDB and MySQL CDC"
 authors = ["xloka"]
 repository = "https://github.com/xloka/xloka-flow"
 license = "MIT OR Apache-2.0"
