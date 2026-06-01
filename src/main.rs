@@ -10,7 +10,7 @@ use xloka_flow::{
     cdc::{live::{LiveCdc, LiveCdcConfig}, CdcSource},
     store::StoreWriter,
     AppState, Settings,
-    accounts::{AccountManager, AccountState},
+    accounts::AccountManager,
 };
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────
@@ -29,11 +29,15 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// OSS CLI Mode: Sync a single MySQL database to a local DuckDB file natively.
+    /// CLI Mode: Sync a single MySQL database to a local DuckDB file natively.
     Sync {
         /// The MySQL connection URL (e.g. mysql://user:pass@localhost:3306/db)
         #[arg(long)]
         mysql: String,
+        
+        /// Optional: Read-only MySQL replica to use for the initial snapshot `SELECT *` phase
+        #[arg(long)]
+        snapshot_mysql: Option<String>,
         
         /// The local DuckDB file path to create/update
         #[arg(long, default_value = "local.db")]
@@ -44,6 +48,14 @@ enum Command {
         /// Use the built-in event simulator instead of a live MySQL connection.
         #[arg(long)]
         mock: bool,
+
+        /// Admin API token to secure the /api/admin/* endpoints
+        #[arg(long, env = "XLOKA__ADMIN_TOKEN")]
+        admin_token: Option<String>,
+
+        /// Comma-separated list of allowed CORS domains (e.g. "https://example.com,http://localhost:3000")
+        #[arg(long, env = "XLOKA__ALLOWED_DOMAINS")]
+        allowed_domains: Option<String>,
     },
 }
 
@@ -54,9 +66,9 @@ async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("xloka_flow=info")),
+                .unwrap_or_else(|_| EnvFilter::new("xloka_flow=info,query_timing=info")),
         )
-        .with_target(false)
+        .with_target(true)
         .compact()
         .init();
 
@@ -71,8 +83,13 @@ async fn main() {
     };
 
     let result = match cli.command {
-        Command::Sync { mysql, db } => run_sync(settings, mysql, db).await,
-        Command::Serve { mock } => run_serve(settings, mock).await,
+        Command::Sync { mysql, snapshot_mysql, db } => run_sync(settings, mysql, snapshot_mysql, db).await,
+        Command::Serve { mock, admin_token, allowed_domains } => {
+            let mut settings = settings;
+            if admin_token.is_some() { settings.admin_token = admin_token; }
+            if allowed_domains.is_some() { settings.allowed_domains = allowed_domains; }
+            run_serve(settings, mock).await
+        }
     };
 
     if let Err(e) = result {
@@ -83,9 +100,12 @@ async fn main() {
 
 // ─── Subcommand implementations ───────────────────────────────────────────────
 
-async fn run_sync(settings: Settings, mysql_url: String, db_path: String) -> xloka_flow::error::FlowResult<()> {
-    info!("Starting xloka-flow in OSS SYNC mode...");
+async fn run_sync(settings: Settings, mysql_url: String, snapshot_mysql: Option<String>, db_path: String) -> xloka_flow::error::FlowResult<()> {
+    info!("Starting xloka-flow in SYNC mode...");
     info!("Source: {}", mysql_url);
+    if let Some(ref sm) = snapshot_mysql {
+        info!("Snapshot Replica: {}", sm);
+    }
     info!("Destination: {}", db_path);
 
     let conn = duckdb::Connection::open(&db_path)?;
@@ -103,18 +123,30 @@ async fn run_sync(settings: Settings, mysql_url: String, db_path: String) -> xlo
     // Spawn CDC
     let cdc = LiveCdc::new(LiveCdcConfig {
         mysql_url,
+        snapshot_mysql_url: snapshot_mysql,
         checkpoint_path: format!("{}_checkpoint.json", db_path),
         filter_databases: vec![],
         filter_tables: vec![],
         server_id: 42 + rand::random::<u32>() % 1000,
     });
     
-    let cdc_task = tokio::spawn(async move { let _ = cdc.run(tx).await; });
+    let cdc_task = tokio::spawn(async move { 
+        if let Err(e) = cdc.run(tx).await {
+            error!("LiveCdc task failed: {:?}", e);
+        }
+    });
 
-    tokio::signal::ctrl_c().await.unwrap();
-    info!("Ctrl-C received, shutting down…");
-    cdc_task.abort();
-    writer_task.abort();
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            info!("Ctrl-C received, shutting down…");
+        }
+        res = cdc_task => {
+            error!("CDC task unexpectedly exited: {:?}", res);
+        }
+        res = writer_task => {
+            error!("Writer task unexpectedly exited: {:?}", res);
+        }
+    }
     
     info!("xloka-flow shut down cleanly.");
     Ok(())

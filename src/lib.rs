@@ -24,6 +24,9 @@ pub struct Settings {
 
     #[serde(default = "default_flush_interval_ms")]
     pub flush_interval_ms: u64,
+
+    pub admin_token: Option<String>,
+    pub allowed_domains: Option<String>,
 }
 
 fn default_listen() -> String {
@@ -34,6 +37,18 @@ fn default_batch_size() -> usize {
 }
 fn default_flush_interval_ms() -> u64 {
     1_000
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            listen: default_listen(),
+            batch_size: default_batch_size(),
+            flush_interval_ms: default_flush_interval_ms(),
+            admin_token: None,
+            allowed_domains: None,
+        }
+    }
 }
 
 impl Settings {
@@ -89,5 +104,33 @@ impl AppState {
             settings: Arc::new(settings),
             account_manager: manager,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_checkpoint_persistence() {
+        let path = format!("test_checkpoint_{}.json", uuid::Uuid::new_v4());
+        
+        let cp = Checkpoint {
+            filename: Some("mysql-bin.000001".into()),
+            position: Some(12345),
+            gtid_set: None,
+        };
+        
+        // Save
+        assert!(cp.save(&path).is_ok());
+        
+        // Load
+        let loaded = Checkpoint::load(&path);
+        assert_eq!(loaded.filename, Some("mysql-bin.000001".into()));
+        assert_eq!(loaded.position, Some(12345));
+        assert_eq!(loaded.gtid_set, None);
+        
+        let _ = fs::remove_file(path);
     }
 }

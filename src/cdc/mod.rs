@@ -184,6 +184,11 @@ pub enum RowOp {
         table: String,
         pk_values: HashMap<String, Value>,
     },
+    /// Bulk load data from a temporary CSV file into DuckDB natively via COPY
+    BulkLoadCsv {
+        table: String,
+        csv_path: String,
+    },
 }
 
 // ─── Trait ────────────────────────────────────────────────────────────────────

@@ -25,6 +25,8 @@ use crate::Checkpoint;
 pub struct LiveCdcConfig {
     /// MySQL connection URL.  E.g. `mysql://user:pass@host:3306/db`
     pub mysql_url: String,
+    /// Optional: Read-only replica for the initial snapshot phase.
+    pub snapshot_mysql_url: Option<String>,
     /// Path where the binlog checkpoint is persisted.
     pub checkpoint_path: String,
     /// If non-empty, only replicate rows from these databases.
@@ -58,6 +60,7 @@ impl CdcSource for LiveCdc {
         // ── 1. Verify connectivity and binlog settings ────────────────────────
         let pool = mysql_async::Pool::new(self.config.mysql_url.as_str());
         let mut conn = pool.get_conn().await?;
+        conn.query_drop("SET NAMES utf8mb4").await?;
 
         // Check binlog_format = ROW
         let binlog_format: Option<(String, String)> = conn
@@ -118,8 +121,8 @@ impl CdcSource for LiveCdc {
 
         // ── 1.5. Initial Schema Sync ─────────────────────────────────────────
         let filter_tables = if self.config.filter_tables.is_empty() {
-            // Get all tables in the database
-            let rows: Vec<String> = conn.query("SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE()").await?;
+            // Get all base tables in the database (exclude VIEWs)
+            let rows: Vec<String> = conn.query("SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'").await?;
             rows
         } else {
             self.config.filter_tables.clone()
@@ -135,6 +138,140 @@ impl CdcSource for LiveCdc {
             } else {
                 warn!("LiveCdc: schema for table '{}' not found in database.", table_name);
             }
+        }
+
+        // ── 1.8. Initial Snapshot Sync (if needed) ───────────────────────────
+        if checkpoint.filename.is_none() {
+            info!("LiveCdc: No checkpoint found. Starting Initial Snapshot Sync.");
+            
+            // Determine which connection to use for the snapshot
+            let mut snap_conn = if let Some(ref snap_url) = self.config.snapshot_mysql_url {
+                info!("LiveCdc: Using Snapshot Replica: {}", mask_password(snap_url));
+                let snap_pool = mysql_async::Pool::new(snap_url.as_str());
+                snap_pool.get_conn().await?
+            } else {
+                pool.get_conn().await?
+            };
+            
+            snap_conn.query_drop("SET NAMES utf8mb4").await?;
+
+            // Start a consistent snapshot transaction
+            snap_conn.query_drop("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ").await?;
+            snap_conn.query_drop("START TRANSACTION WITH CONSISTENT SNAPSHOT").await?;
+            
+            // Capture binlog coordinates for this exact snapshot
+            let (target_file, target_pos) = if self.config.snapshot_mysql_url.is_some() {
+                // If using a replica, we need to know where it is relative to the master
+                // Try SHOW REPLICA STATUS (MySQL 8+) first, fallback to SHOW SLAVE STATUS (MySQL 5.7)
+                let mut status_row: Option<mysql_async::Row> = snap_conn.query_first("SHOW REPLICA STATUS").await.unwrap_or(None);
+                if status_row.is_none() {
+                    status_row = snap_conn.query_first("SHOW SLAVE STATUS").await.unwrap_or(None);
+                }
+                
+                if let Some(row) = status_row {
+                    // Extract Relay_Master_Log_File and Exec_Master_Log_Pos
+                    // These columns might be retrieved by index or name, but for SHOW SLAVE STATUS it's safer to use names.
+                    // However, `mysql_async::Row` allows getting by column name.
+                    let file: Option<String> = row.get("Relay_Master_Log_File").or_else(|| row.get(9)); // index 9 is traditionally Relay_Master_Log_File
+                    let pos: Option<u64> = row.get("Exec_Master_Log_Pos").or_else(|| row.get(21)); // index 21 is traditionally Exec_Master_Log_Pos
+                    if file.is_none() || pos.is_none() {
+                        warn!("LiveCdc: Could not determine Master Log position from Replica Status. Check if it's actually a replicating slave!");
+                    }
+                    (file, pos)
+                } else {
+                    warn!("LiveCdc: SHOW REPLICA/SLAVE STATUS returned empty. Are you sure this is a replica?");
+                    (None, None)
+                }
+            } else {
+                // If using master directly, SHOW MASTER STATUS gives us the current master position
+                let master_status: Option<mysql_async::Row> = snap_conn.query_first("SHOW MASTER STATUS").await?;
+                if let Some(row) = master_status {
+                    (row.get::<String, _>(0), row.get::<u64, _>(1))
+                } else {
+                    (None, None)
+                }
+            };
+            
+            info!("LiveCdc: Snapshot target binlog coordinates: file={:?} pos={:?}", target_file, target_pos);
+            
+            // Dump each table
+            use futures::StreamExt;
+            for table_name in &filter_tables {
+                if let Some(schema) = table_schemas.get(table_name) {
+                    info!("LiveCdc: Snapshotting table '{}'...", table_name);
+                    
+                    let temp_dir = std::path::Path::new("data");
+                    std::fs::create_dir_all(temp_dir).unwrap_or_default();
+                    let tmp = tempfile::Builder::new()
+                        .prefix(&format!("{table_name}_snap_"))
+                        .suffix(".csv")
+                        .tempfile_in(temp_dir)
+                        .expect("Failed to create temporary CSV file");
+                    
+                    let (tmp_file, tmp_path) = tmp.keep().expect("Failed to keep tempfile");
+                    // Fix windows path separators for duckdb
+                    let tmp_path_str = tmp_path.to_string_lossy().replace('\\', "/");
+                    
+                    let mut wtr = csv::WriterBuilder::new()
+                        .has_headers(false) // We write our own header
+                        .from_writer(std::io::BufWriter::new(tmp_file));
+                    
+                    let headers: Vec<&str> = schema.columns.iter().map(|c| c.name.as_str()).collect();
+                    wtr.write_record(&headers).unwrap();
+                    
+                    let mut stream = snap_conn.query_stream(format!("SELECT * FROM `{}`", table_name)).await?;
+                    let mut row_count = 0;
+                    
+                    while let Some(row_result) = stream.next().await {
+                        let row: mysql_async::Row = row_result?;
+                        let mut record = Vec::with_capacity(schema.columns.len());
+                        
+                        for (idx, _) in schema.columns.iter().enumerate() {
+                            let val = row.get::<mysql_async::Value, _>(idx).unwrap_or(mysql_async::Value::NULL);
+                            use mysql_async::Value as MyVal;
+                            let s = match val {
+                                MyVal::NULL => "\\N".to_string(),
+                                MyVal::Bytes(b) => String::from_utf8_lossy(&b).to_string(),
+                                MyVal::Int(i) => i.to_string(),
+                                MyVal::UInt(u) => u.to_string(),
+                                MyVal::Float(f) => f.to_string(),
+                                MyVal::Double(d) => d.to_string(),
+                                MyVal::Date(y, m, d, h, mn, s, _) => {
+                                    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, m, d, h, mn, s)
+                                }
+                                MyVal::Time(is_neg, d, h, m, s, _) => {
+                                    let sign = if is_neg { "-" } else { "" };
+                                    format!("{}{:02}:{:02}:{:02}", sign, d * 24 + h as u32, m, s)
+                                }
+                            };
+                            record.push(s);
+                        }
+                        wtr.write_record(&record).unwrap();
+                        row_count += 1;
+                    }
+                    
+                    wtr.flush().unwrap();
+                    info!("LiveCdc: Downloaded {} rows. Sending BulkLoadCsv to writer.", row_count);
+                    
+                    let op = RowOp::BulkLoadCsv {
+                        table: table_name.clone(),
+                        csv_path: tmp_path_str,
+                    };
+                    if let Err(e) = tx.send(op).await {
+                        warn!("LiveCdc failed to send BulkLoadCsv during snapshot: {}", e);
+                    }
+                    info!("LiveCdc: Snapshot for '{}' complete ({} rows).", table_name, row_count);
+                }
+            }
+            
+            // Commit and save checkpoint
+            snap_conn.query_drop("COMMIT").await?;
+            drop(snap_conn); // Release connection back to pool / drop replica connection
+
+            checkpoint.filename = target_file;
+            checkpoint.position = target_pos;
+            let _ = checkpoint.save(&self.config.checkpoint_path);
+            info!("LiveCdc: Initial Snapshot Sync complete. Checkpoint saved.");
         }
 
         // ── 2. Full binlog streaming ──────────────────────────────────────────
@@ -158,55 +295,6 @@ impl CdcSource for LiveCdc {
 
         use std::collections::HashMap;
         let mut table_maps = HashMap::new();
-
-        fn value_from_mysql(val: mysql_async::Value) -> crate::cdc::Value {
-            use mysql_async::Value as MyVal;
-            use crate::cdc::Value as OurVal;
-            match val {
-                MyVal::NULL => OurVal::Null,
-                MyVal::Bytes(b) => {
-                    // Try to parse as UTF-8 string, fallback to bytes
-                    if let Ok(s) = String::from_utf8(b.clone()) {
-                        OurVal::Text(s)
-                    } else {
-                        OurVal::Bytes(b)
-                    }
-                }
-                MyVal::Int(i) => OurVal::Integer(i),
-                MyVal::UInt(u) => OurVal::Integer(u as i64),
-                MyVal::Float(f) => OurVal::Float(f as f64),
-                MyVal::Double(d) => OurVal::Float(d),
-                MyVal::Date(y, m, d, h, mn, s, _ms) => {
-                    let text = format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, m, d, h, mn, s);
-                    OurVal::Text(text)
-                }
-                MyVal::Time(is_neg, d, h, m, s, _ms) => {
-                    let sign = if is_neg { "-" } else { "" };
-                    let text = format!("{}{:02}:{:02}:{:02}", sign, d * 24 + h as u32, m, s);
-                    OurVal::Text(text)
-                }
-            }
-        }
-
-        fn parse_row(binlog_row: mysql_common::binlog::row::BinlogRow, schema: Option<&crate::cdc::TableSchema>) -> HashMap<String, crate::cdc::Value> {
-            use std::convert::TryInto;
-            let row: mysql_async::Row = binlog_row.try_into().unwrap();
-            let mut map = HashMap::new();
-            for (idx, _col) in row.columns_ref().iter().enumerate() {
-                let name = if let Some(s) = schema {
-                    if idx < s.columns.len() {
-                        s.columns[idx].name.clone()
-                    } else {
-                        format!("@{}", idx)
-                    }
-                } else {
-                    format!("@{}", idx)
-                };
-                let val = row.get::<mysql_async::Value, _>(idx).unwrap_or(mysql_async::Value::NULL);
-                map.insert(name, value_from_mysql(val));
-            }
-            map
-        }
 
         while let Some(event) = stream.next().await {
             let event = event?;
@@ -326,6 +414,54 @@ impl CdcSource for LiveCdc {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+fn value_from_mysql(val: mysql_async::Value) -> crate::cdc::Value {
+    use mysql_async::Value as MyVal;
+    use crate::cdc::Value as OurVal;
+    match val {
+        MyVal::NULL => OurVal::Null,
+        MyVal::Bytes(b) => {
+            if let Ok(s) = String::from_utf8(b.clone()) {
+                OurVal::Text(s)
+            } else {
+                OurVal::Bytes(b)
+            }
+        }
+        MyVal::Int(i) => OurVal::Integer(i),
+        MyVal::UInt(u) => OurVal::Integer(u as i64),
+        MyVal::Float(f) => OurVal::Float(f as f64),
+        MyVal::Double(d) => OurVal::Float(d),
+        MyVal::Date(y, m, d, h, mn, s, _ms) => {
+            let text = format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, m, d, h, mn, s);
+            OurVal::Text(text)
+        }
+        MyVal::Time(is_neg, d, h, m, s, _ms) => {
+            let sign = if is_neg { "-" } else { "" };
+            let text = format!("{}{:02}:{:02}:{:02}", sign, d * 24 + h as u32, m, s);
+            OurVal::Text(text)
+        }
+    }
+}
+
+fn parse_row(binlog_row: mysql_common::binlog::row::BinlogRow, schema: Option<&crate::cdc::TableSchema>) -> std::collections::HashMap<String, crate::cdc::Value> {
+    use std::convert::TryInto;
+    let row: mysql_async::Row = binlog_row.try_into().unwrap();
+    let mut map = std::collections::HashMap::new();
+    for (idx, _col) in row.columns_ref().iter().enumerate() {
+        let name = if let Some(s) = schema {
+            if idx < s.columns.len() {
+                s.columns[idx].name.clone()
+            } else {
+                format!("@{}", idx)
+            }
+        } else {
+            format!("@{}", idx)
+        };
+        let val = row.get::<mysql_async::Value, _>(idx).unwrap_or(mysql_async::Value::NULL);
+        map.insert(name, value_from_mysql(val));
+    }
+    map
+}
+
 /// Replace the password in a MySQL URL with `***` for safe logging.
 fn mask_password(url: &str) -> String {
     // mysql://user:PASSWORD@host:port/db  →  mysql://user:***@host:port/db
@@ -348,6 +484,7 @@ async fn fetch_table_schema(
 ) -> FlowResult<Option<crate::cdc::TableSchema>> {
     use mysql_async::prelude::*;
     let mut conn = pool.get_conn().await?;
+    conn.query_drop("SET NAMES utf8mb4").await?;
     let sql = format!(
         "SELECT column_name, column_type, is_nullable, column_key \
          FROM information_schema.columns \

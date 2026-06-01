@@ -1,0 +1,20 @@
+# xloka-flow Configuration Example
+# You can rename this file to config.toml or use environment variables (e.g., XLOKA__MYSQL_URL)
+
+# MySQL connection URL.
+mysql_url = "mysql://root:password@127.0.0.1:3306/mydb"
+
+# Path to the DuckDB database file.
+# db_path = "xloka-flow.db"
+
+# Path to persist the binlog checkpoint.
+# checkpoint_path = "checkpoint.json"
+
+# HTTP listen address for the Axum API.
+# listen = "0.0.0.0:3000"
+
+# Number of CDC row-ops to buffer before forcing a DuckDB flush.
+# batch_size = 1000
+
+# Maximum ms to wait before flushing a partial batch.
+# flush_interval_ms = 1000

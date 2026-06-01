@@ -90,26 +90,42 @@ impl StoreWriter {
                 }
                 // Got an op.
                 Ok(Some(op)) => {
-                    // SchemaChange ops are flushed immediately — they must be applied
-                    // before any subsequent row ops for the same table.
-                    if matches!(op, RowOp::SchemaChange(_)) {
+                    let is_immediate = matches!(op, RowOp::SchemaChange(_) | RowOp::BulkLoadCsv { .. });
+                    if is_immediate {
                         // Flush any pending rows first.
                         if !batch.is_empty() {
                             let conn = self.conn.lock().unwrap();
                             if let Err(e) =
                                 flush_batch(&conn, &mut batch, &mut schema_cache)
                             {
-                                error!("Pre-schema flush error: {e}");
+                                error!("Pre-immediate op flush error: {e}");
                             }
                             last_flush = Instant::now();
                         }
-                        if let RowOp::SchemaChange(schema) = &op {
-                            let conn = self.conn.lock().unwrap();
-                            if let Err(e) =
-                                reconcile_schema(&conn, schema, &mut schema_cache)
-                            {
-                                error!("Schema reconcile error for {}: {e}", schema.table_name);
+                        
+                        let conn = self.conn.lock().unwrap();
+                        match op {
+                            RowOp::SchemaChange(schema) => {
+                                if let Err(e) =
+                                    reconcile_schema(&conn, &schema, &mut schema_cache)
+                                {
+                                    error!("Schema reconcile error for {}: {e}", schema.table_name);
+                                }
                             }
+                            RowOp::BulkLoadCsv { table, csv_path } => {
+                                info!("StoreWriter: Bulk loading {} from {}", table, csv_path);
+                                let sql = format!("COPY \"{}\" FROM '{}' (FORMAT CSV, HEADER TRUE, NULLSTR '\\N')", table, csv_path);
+                                if let Err(e) = conn.execute_batch(&sql) {
+                                    error!("Bulk load error for {}: {e}", table);
+                                } else {
+                                    info!("StoreWriter: Bulk load for {} complete.", table);
+                                }
+                                // Clean up the temp file
+                                if let Err(e) = std::fs::remove_file(&csv_path) {
+                                    warn!("Failed to delete temp CSV file {}: {}", csv_path, e);
+                                }
+                            }
+                            _ => unreachable!(),
                         }
                     } else {
                         batch.push(op);
@@ -147,6 +163,20 @@ fn reconcile_schema(
             let ddl = incoming.create_ddl();
             debug!("Creating table:\n{ddl}");
             conn.execute_batch(&ddl)?;
+            
+            // Auto-index foreign keys for lightning-fast JOINS
+            for col in &incoming.columns {
+                if !col.is_primary_key && col.name.ends_with("_id") {
+                    let idx_name = format!("idx_{}_{}", table, col.name);
+                    let idx_sql = format!("CREATE INDEX IF NOT EXISTS \"{}\" ON \"{}\" (\"{}\")", idx_name, table, col.name);
+                    if let Err(e) = conn.execute_batch(&idx_sql) {
+                        warn!("Failed to create index {}: {}", idx_name, e);
+                    } else {
+                        info!("Created index {}", idx_name);
+                    }
+                }
+            }
+            
             cache.insert(
                 table.clone(),
                 CachedSchema {
@@ -195,6 +225,17 @@ fn reconcile_schema(
                 debug!("Schema evolution: {sql}");
                 conn.execute_batch(&sql)?;
                 info!("Added column '{}.{}'", table, col.name);
+                
+                // Index newly added foreign keys
+                if !col.is_primary_key && col.name.ends_with("_id") {
+                    let idx_name = format!("idx_{}_{}", table, col.name);
+                    let idx_sql = format!("CREATE INDEX IF NOT EXISTS \"{}\" ON \"{}\" (\"{}\")", idx_name, table, col.name);
+                    if let Err(e) = conn.execute_batch(&idx_sql) {
+                        warn!("Failed to create index {}: {}", idx_name, e);
+                    } else {
+                        info!("Created index {}", idx_name);
+                    }
+                }
             }
 
             if !new_cols.is_empty() {
@@ -227,23 +268,39 @@ fn flush_batch(
     // Group by table so we can use a single prepared statement per table.
     let ops = std::mem::take(batch);
 
+    conn.execute_batch("BEGIN TRANSACTION;")?;
+
+    let mut err = None;
     // Process sequentially (ordered CDC semantics matter).
     for op in ops {
-        match op {
+        let res = match op {
             RowOp::Insert { table, row } => {
-                apply_upsert(conn, &table, row, cache)?;
+                apply_upsert(conn, &table, row, cache)
             }
             RowOp::Update { table, after, .. } => {
-                apply_upsert(conn, &table, after, cache)?;
+                apply_upsert(conn, &table, after, cache)
             }
             RowOp::Delete { table, pk_values } => {
-                apply_delete(conn, &table, pk_values, cache)?;
+                apply_delete(conn, &table, pk_values, cache)
             }
-            RowOp::SchemaChange(_) => {
+            RowOp::SchemaChange(_) | RowOp::BulkLoadCsv { .. } => {
                 // Should never appear here — handled before batching.
-                warn!("SchemaChange inside batch (bug): skipping");
+                warn!("SchemaChange/BulkLoadCsv inside batch (bug): skipping");
+                Ok(())
             }
+        };
+        
+        if let Err(e) = res {
+            err = Some(e);
+            break;
         }
+    }
+
+    if let Some(e) = err {
+        let _ = conn.execute_batch("ROLLBACK;");
+        return Err(e);
+    } else {
+        conn.execute_batch("COMMIT;")?;
     }
 
     Ok(())

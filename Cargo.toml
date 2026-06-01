@@ -2,15 +2,18 @@
 name = "xloka-flow"
 version = "0.1.0"
 edition = "2021"
+authors = ["xloka"]
 repository = "https://github.com/xloka/xloka-flow"
+license = "MIT OR Apache-2.0"
+categories = ["command-line-utilities"]
+keywords = ["flow"]
+readme = "README.md"
+default-run = "xloka-flow"
 
 [[bin]]
 name = "xloka-flow"
 path = "src/main.rs"
 
-[[bin]]
-name = "seed"
-path = "src/bin/seed.rs"
 
 [[bin]]
 name = "test_binlog"
@@ -38,7 +41,7 @@ tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
 tower = "0.5"
 
 # CLI
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 # SQL parsing (SELECT-only guard in API)
 sqlparser = "0.62"
@@ -60,6 +63,8 @@ dotenvy = "0.15"
 
 # Async trait support
 async-trait = "0.1"
+tempfile = "3.27.0"
+csv = "1.4.0"
 
 # The profile that 'dist' will build with
 [profile.dist]

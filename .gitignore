@@ -1,4 +1,5 @@
 /target
+/.cargo
 *.db
 *.log
 *.err
@@ -6,3 +7,5 @@
 .env
 scripts/
 checkpoint.json
+data/
+accounts.json
