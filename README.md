@@ -30,14 +30,24 @@ cargo install xloka-flow
 
 **Pre-compiled Binaries (No Rust required)**
 
-*Linux / macOS*
+*Linux (x86_64)*
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/xloka/xloka-flow/releases/latest/download/xloka-flow-installer.sh | sh
+curl -LsSf https://github.com/xloka/xloka-flow/releases/latest/download/xloka-flow-x86_64-unknown-linux-gnu.tar.xz | tar -xJ && sudo mv xloka-flow /usr/local/bin/
 ```
 
-*Windows*
+*macOS (Apple Silicon)*
+```bash
+curl -LsSf https://github.com/xloka/xloka-flow/releases/latest/download/xloka-flow-aarch64-apple-darwin.tar.xz | tar -xJ && sudo mv xloka-flow /usr/local/bin/
+```
+
+*macOS (Intel)*
+```bash
+curl -LsSf https://github.com/xloka/xloka-flow/releases/latest/download/xloka-flow-x86_64-apple-darwin.tar.xz | tar -xJ && sudo mv xloka-flow /usr/local/bin/
+```
+
+*Windows (x86_64)*
 ```powershell
-irm https://github.com/xloka/xloka-flow/releases/latest/download/xloka-flow-installer.ps1 | iex
+Invoke-WebRequest https://github.com/xloka/xloka-flow/releases/latest/download/xloka-flow-x86_64-pc-windows-msvc.zip -OutFile xloka-flow.zip; Expand-Archive xloka-flow.zip; Move-Item xloka-flow\xloka-flow.exe $env:USERPROFILE\.cargo\bin\
 ```
 
 ### 2. Run
