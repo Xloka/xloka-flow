@@ -1,4 +1,4 @@
-# xloka-flow v0.2.0 Configuration Example
+# xloka-flow v0.2.1 Configuration Example
 # Copy this file to `config.toml` or configure via `XLOKA__*` environment variables.
 # Precedence (lowest to highest): defaults -> config.toml -> XLOKA__* env vars -> CLI flags.
 

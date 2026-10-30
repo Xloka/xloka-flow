@@ -22,11 +22,17 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
 
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cmake pkg-config libssl-dev
+
+      - name: Verify formatting and clippy before publish
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets -- -D warnings
 
       - name: Publish to crates.io
         env:

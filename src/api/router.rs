@@ -1,4 +1,4 @@
-//! REST & WebSocket routing for xloka-flow v0.2.0.
+//! REST & WebSocket routing for xloka-flow v0.2.1.
 
 use axum::{
     extract::{Path, Query, State},

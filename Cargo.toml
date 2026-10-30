@@ -1,6 +1,6 @@
 [package]
 name = "xloka-flow"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 # MSRV dictated by the dependency graph (time 0.3.55 needs 1.88, duckdb/arrow
 # need 1.85). Keep in sync with the builder image in the Dockerfile.

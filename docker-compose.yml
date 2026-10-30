@@ -1,6 +1,6 @@
 services:
   xloka-flow:
-    image: ghcr.io/xloka/xloka-flow:v0.2.0
+    image: ghcr.io/xloka/xloka-flow:v0.2.1
     build:
       context: .
       dockerfile: Dockerfile
