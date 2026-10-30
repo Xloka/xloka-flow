@@ -1,73 +1,83 @@
 [package]
 name = "xloka-flow"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+# MSRV dictated by the dependency graph (time 0.3.55 needs 1.88, duckdb/arrow
+# need 1.85). Keep in sync with the builder image in the Dockerfile.
+rust-version = "1.88"
 description = "High-performance Analytics DB and API Server using DuckDB and MySQL CDC"
 authors = ["xloka"]
 repository = "https://github.com/xloka/xloka-flow"
 license = "MIT OR Apache-2.0"
-categories = ["command-line-utilities"]
-keywords = ["flow"]
+categories = ["command-line-utilities", "database"]
+keywords = ["duckdb", "mysql", "cdc", "replication", "analytics"]
 readme = "README.md"
 default-run = "xloka-flow"
+exclude = [
+    ".github/",
+    ".dockerignore",
+    ".gitattributes",
+    "dist-workspace.toml",
+    "postman/",
+]
 
 [[bin]]
 name = "xloka-flow"
 path = "src/main.rs"
 
-
-[[bin]]
-name = "test_binlog"
-path = "src/bin/test_binlog.rs"
-
 [dependencies]
-# Async runtime
+# Web & Async runtime
+axum = { version = "0.8", features = ["ws", "macros", "json"] }
 tokio = { version = "1", features = ["full"] }
+futures-util = { version = "0.3", features = ["sink"] }
+futures = "0.3"
 
 # Analytical Engine (bundled = compiles DuckDB from source, no system lib needed)
 duckdb = { version = "1", features = ["bundled"] }
 
-# MySQL async driver with first-party binlog replication support
-mysql_async = { version = "0.37", features = ["binlog"] }
-mysql_common = "0.37"
-futures = "0.3"
+# MySQL async driver — pinned to 0.34/0.32 to prevent breaking binlog stream traits
+# and maintain stable binlog event payload deserialization across MySQL 5.7 and 8.0+.
+mysql_async = { version = "0.34", features = ["binlog"] }
+mysql_common = "0.32"
 
-# Serialization
-serde = { version = "1", features = ["derive"] }
+# SQL parsing — pinned to 0.52 for stable DDL AST representations in schema evolution
+sqlparser = "0.52"
+
+# Data structures & serialization
+indexmap = { version = "2", features = ["serde"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
+toml = "0.8"
+# csv pinned to 1.3 for stable MSRV and standard CRLF stream serialization
+csv = "1.3"
 
-# REST API
-axum = { version = "0.8", features = ["json"] }
-tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+# HTTP & Middleware
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-full", "fs"] }
 tower = "0.5"
+
+# Logging & Errors
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+anyhow = "1"
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
-
-# SQL parsing (SELECT-only guard in API)
-sqlparser = "0.62"
-
-# Error handling & logging
-anyhow = "1"
-thiserror = "2"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
 rand = "0.9"
-
-# Configuration (env vars + config.toml)
 config = "0.14"
 dotenvy = "0.15"
-
-# Async trait support
 async-trait = "0.1"
-tempfile = "3.27.0"
-csv = "1.4.0"
+tempfile = "3"
 
-# The profile that 'dist' will build with
+[dev-dependencies]
+tempfile = "3"
+tokio-tungstenite = "0.26"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
 [profile.dist]
 inherits = "release"
 lto = "thin"

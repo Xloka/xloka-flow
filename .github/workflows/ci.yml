@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Must match `rust-version` in Cargo.toml and the builder image in the Dockerfile.
+  RUST_VERSION: "1.88"
+
+jobs:
+  test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake pkg-config libssl-dev
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --all-targets
+
+  compose:
+    name: Validate docker-compose.yml
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate the compose file
+        run: docker compose config --quiet
+
+      - name: Check the compose file for the ports the daemon actually serves
+        run: |
+          set -euo pipefail
+          # The daemon exposes exactly one port (HTTP + WebSocket).
+          grep -q 'EXPOSE 3000' Dockerfile
+          # No privileged/unused port may be published.
+          if grep -E '^\s*-\s*"?[0-9]+:443' docker-compose.yml; then
+            echo "::error::port 443 is published but the daemon does not serve TLS"
+            exit 1
+          fi
+          # The evaluation MySQL must not be published on all interfaces.
+          if grep -E '^\s*-\s*"?[0-9]+:3306' docker-compose.yml; then
+            echo "::error::MySQL port must be bound to 127.0.0.1"
+            exit 1
+          fi

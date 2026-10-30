@@ -1,20 +1,59 @@
-# xloka-flow Configuration Example
-# You can rename this file to config.toml or use environment variables (e.g., XLOKA__MYSQL_URL)
+# xloka-flow v0.2.0 Configuration Example
+# Copy this file to `config.toml` or configure via `XLOKA__*` environment variables.
+# Precedence (lowest to highest): defaults -> config.toml -> XLOKA__* env vars -> CLI flags.
 
-# MySQL connection URL.
-mysql_url = "mysql://root:password@127.0.0.1:3306/mydb"
+# HTTP & WebSocket listen address
+listen = "0.0.0.0:3000"
 
-# Path to the DuckDB database file.
-# db_path = "xloka-flow.db"
+# Path to the default DuckDB database file
+db_path = "xloka-flow.db"
 
-# Path to persist the binlog checkpoint.
-# checkpoint_path = "checkpoint.json"
+# Number of CDC row operations to coalesce before flushing to DuckDB
+batch_size = 10000
 
-# HTTP listen address for the Axum API.
-# listen = "0.0.0.0:3000"
+# Maximum milliseconds to wait before flushing a partial batch
+flush_interval_ms = 50
 
-# Number of CDC row-ops to buffer before forcing a DuckDB flush.
-# batch_size = 1000
+# Maximum concurrent WebSocket connections
+max_ws_connections = 1000
 
-# Maximum ms to wait before flushing a partial batch.
-# flush_interval_ms = 1000
+# Maximum rows materialized per statement in a declarative query
+max_query_rows = 100000
+
+# Path to the declarative analytical query manifest (TOML)
+# query_manifest_path = "flow_queries.toml"
+
+# Optional directory containing per-account query manifests (`<dir>/<account_id>.toml`)
+# Defaults to `queries/` when unset.
+# query_manifest_dir = "queries"
+
+# Path to the persisted multi-account registry file
+# accounts_file = "accounts.json"
+
+# Poll interval in seconds for hot-reloading `accounts_file` (0 disables polling)
+accounts_reload_secs = 0
+
+# When true, `accounts_file` is owned by an external control plane:
+# POST /api/admin/accounts and DELETE /api/admin/accounts/{id} return 409 Conflict.
+accounts_read_only = false
+
+# When true, removing an account from `accounts.json` also deletes its `data/<id>.duckdb` files
+accounts_prune_data = false
+
+# Per-account DuckDB memory cap (e.g. "256MB", "512MB", "1GB")
+account_memory_limit = "256MB"
+
+# Per-account DuckDB worker thread count
+duckdb_threads = 2
+
+# Maximum concurrent replicated accounts on this node (0 = unlimited)
+max_accounts = 16
+
+# Admin token required for /api/admin/* endpoints (fail-closed when unset)
+# admin_token = "replace_with_admin_secret"
+
+# Optional API key protecting the read-only data plane (/api/v1/query/* and /ws)
+# data_api_key = "replace_with_data_api_key"
+
+# Comma-separated list of allowed CORS origins (empty or "*" allows all origins)
+# allowed_domains = "https://app.example.com,https://admin.example.com"

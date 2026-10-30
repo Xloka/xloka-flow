@@ -1,0 +1,180 @@
+{
+  "info": {
+    "name": "xloka-flow",
+    "description": "Local test collection. Set baseUrl, adminToken, apiKey in collection variables.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://127.0.0.1:3000" },
+    { "key": "wsUrl", "value": "ws://127.0.0.1:3000/api/v1/ws" },
+    { "key": "adminToken", "value": "devtoken" },
+    { "key": "apiKey", "value": "xk_REPLACE_ME" },
+    { "key": "accountId", "value": "REPLACE_ACCOUNT_ID" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{baseUrl}}/health", "host": ["{{baseUrl}}"], "path": ["health"] }
+      }
+    },
+    {
+      "name": "Metrics (Prometheus)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{baseUrl}}/metrics", "host": ["{{baseUrl}}"], "path": ["metrics"] }
+      }
+    },
+    {
+      "name": "List named queries",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{baseUrl}}/api/v1/queries", "host": ["{{baseUrl}}"], "path": ["api", "v1", "queries"] }
+      }
+    },
+    {
+      "name": "Named query (JSON)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/query/account_summary",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "query", "account_summary"]
+        }
+      }
+    },
+    {
+      "name": "Named query (NDJSON)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/query/account_summary?format=ndjson",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "query", "account_summary"],
+          "query": [{ "key": "format", "value": "ndjson" }]
+        }
+      }
+    },
+    {
+      "name": "Named query (CSV)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/query/account_summary?format=csv",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "query", "account_summary"],
+          "query": [{ "key": "format", "value": "csv" }]
+        }
+      }
+    },
+    {
+      "name": "Named query (max_staleness_ms)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/query/account_summary?max_staleness_ms=500",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "query", "account_summary"],
+          "query": [{ "key": "max_staleness_ms", "value": "500" }]
+        }
+      }
+    },
+    {
+      "name": "Named query (account API key)",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "x-api-key", "value": "{{apiKey}}" }],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/query/account_summary",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "query", "account_summary"]
+        }
+      }
+    },
+    {
+      "name": "Raw SQL",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "text/plain" }],
+        "body": { "mode": "raw", "raw": "SELECT * FROM users LIMIT 10;" },
+        "url": { "raw": "{{baseUrl}}/api/query", "host": ["{{baseUrl}}"], "path": ["api", "query"] }
+      }
+    },
+    {
+      "name": "Admin: list accounts",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "x-admin-token", "value": "{{adminToken}}" }],
+        "url": { "raw": "{{baseUrl}}/api/admin/accounts", "host": ["{{baseUrl}}"], "path": ["api", "admin", "accounts"] }
+      }
+    },
+    {
+      "name": "Admin: add account",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "x-admin-token", "value": "{{adminToken}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"dito\",\n  \"mysql_url\": \"mysql://infopress:PASSWORD@localhost:3306/ditoapp_staging\"\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/api/admin/accounts", "host": ["{{baseUrl}}"], "path": ["api", "admin", "accounts"] }
+      }
+    },
+    {
+      "name": "Admin: account tables",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "x-admin-token", "value": "{{adminToken}}" }],
+        "url": {
+          "raw": "{{baseUrl}}/api/admin/accounts/{{accountId}}/tables",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "admin", "accounts", "{{accountId}}", "tables"]
+        }
+      }
+    },
+    {
+      "name": "Admin: full resync",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "x-admin-token", "value": "{{adminToken}}" }],
+        "url": {
+          "raw": "{{baseUrl}}/api/admin/accounts/{{accountId}}/sync",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "admin", "accounts", "{{accountId}}", "sync"]
+        }
+      }
+    },
+    {
+      "name": "Admin: remove account",
+      "request": {
+        "method": "DELETE",
+        "header": [{ "key": "x-admin-token", "value": "{{adminToken}}" }],
+        "url": {
+          "raw": "{{baseUrl}}/api/admin/accounts/{{accountId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "admin", "accounts", "{{accountId}}"]
+        }
+      }
+    },
+    {
+      "name": "WebSocket (see description)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "description": "Postman: New > WebSocket, URL = {{wsUrl}}?api_key={{apiKey}}\nSend: {\"type\":\"subscribe_query\",\"sub_id\":\"s1\",\"query_name\":\"account_summary\",\"throttle_ms\":250}\nor: {\"type\":\"subscribe_table_deltas\",\"sub_id\":\"s2\",\"tables\":[\"users\",\"transactions\"]}",
+        "url": { "raw": "{{wsUrl}}", "host": ["{{wsUrl}}"], "path": [] }
+      }
+    }
+  ]
+}

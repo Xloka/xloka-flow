@@ -1,0 +1,48 @@
+# xloka-flow Analytical Query Manifest Example
+# Define live analytical queries evaluated in parallel on DuckDB and pushed over WebSockets.
+
+[queries.account_summary]
+description = "Real-time user balances and transaction counts"
+tables = ["users", "transactions"]
+statements = [
+    """
+    SELECT 
+        u.id, 
+        u.name, 
+        COUNT(t.id) AS tx_count, 
+        COALESCE(SUM(t.amount), 0.0) AS total_amount
+    FROM users u
+    LEFT JOIN transactions t ON u.id = t.user_id
+    GROUP BY u.id, u.name
+    ORDER BY total_amount DESC
+    LIMIT 25;
+    """
+]
+
+[queries.category_breakdown]
+description = "Live expenditure breakdown aggregated by transaction category"
+tables = ["transactions"]
+statements = [
+    """
+    SELECT 
+        category, 
+        COUNT(*) AS tx_count, 
+        ROUND(SUM(amount), 2) AS total_amount, 
+        ROUND(AVG(amount), 2) AS avg_amount
+    FROM transactions
+    GROUP BY category
+    ORDER BY total_amount DESC;
+    """
+]
+
+[queries.recent_events]
+description = "Streaming recent system events"
+tables = ["events"]
+statements = [
+    """
+    SELECT id, event_type, payload, ts
+    FROM events
+    ORDER BY id DESC
+    LIMIT 10;
+    """
+]

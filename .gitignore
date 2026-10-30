@@ -7,5 +7,15 @@
 .env
 scripts/
 checkpoint.json
+*_checkpoint.json
+*.duckdb
+*.duckdb.wal
 data/
 accounts.json
+
+# Local tooling scratch space
+.zcode/
+PLAN.md
+
+# Local test artifacts
+test_lock.db

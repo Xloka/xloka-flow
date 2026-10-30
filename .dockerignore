@@ -1,0 +1,28 @@
+# Git and IDE
+.git
+.gitignore
+.gitattributes
+.vscode
+.idea
+.zcode
+
+# Build artifacts and caches
+target
+.cargo
+
+# Local state, data, and secrets
+*.db
+*.db.wal
+*.log
+*.err
+.env
+data/
+accounts.json
+checkpoint.json
+
+# Desktop app (Tauri)
+desktop/
+
+# Documentation and auxiliary scripts
+scripts/
+tests/

@@ -22,6 +22,9 @@ pub enum FlowError {
     #[error("SQL guard rejected query: {reason}")]
     SqlGuard { reason: String },
 
+    #[error("Replication filter error: {0}")]
+    Filter(#[from] crate::cdc::filter::FilterError),
+
     #[error("Channel send error: {0}")]
     Send(String),
 
@@ -38,6 +41,18 @@ impl FlowError {
         Self::SqlGuard {
             reason: reason.into(),
         }
+    }
+
+    /// Returns `true` when the error is a permanent configuration or filter violation
+    /// that will never succeed on retry.
+    pub fn is_fatal_config(&self) -> bool {
+        matches!(self, FlowError::Filter(_) | FlowError::Config(_))
+    }
+}
+
+impl From<anyhow::Error> for FlowError {
+    fn from(err: anyhow::Error) -> Self {
+        FlowError::Other(err.to_string())
     }
 }
 

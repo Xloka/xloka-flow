@@ -1,0 +1,4 @@
+# Enforce LF line endings across repository to prevent mixed line ending warnings
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf

@@ -1,0 +1,66 @@
+services:
+  xloka-flow:
+    image: ghcr.io/xloka/xloka-flow:v0.2.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xloka-flow
+    restart: unless-stopped
+    ports:
+      # The API and the WebSocket endpoint share this port.
+      - "3000:3000"
+    environment:
+      - XLOKA__LISTEN=0.0.0.0:3000
+      - XLOKA__ADMIN_TOKEN=${XLOKA_ADMIN_TOKEN:-dev_admin_token}
+      # Comma-separated list of allowed browser origins. Leave it unset to
+      # allow every origin; set it to a comma-separated list to restrict CORS
+      # to your own frontends. A literal `*` is treated as "allow all".
+      - XLOKA__ALLOWED_DOMAINS=${XLOKA_ALLOWED_DOMAINS:-}
+      # Optional API key for the read-only data plane (/api/v1/query/*, /ws).
+      # Leave unset to keep the data plane open.
+      - XLOKA__DATA_API_KEY=${XLOKA_DATA_API_KEY:-}
+      # The account registry lives inside the mounted data directory, so the
+      # accounts (and their DuckDB files) survive a container restart.
+      - XLOKA__ACCOUNTS_FILE=/app/data/accounts.json
+      - XLOKA__BATCH_SIZE=${XLOKA_BATCH_SIZE:-500}
+      - XLOKA__FLUSH_INTERVAL_MS=${XLOKA_FLUSH_INTERVAL_MS:-1000}
+      - RUST_LOG=${RUST_LOG:-xloka_flow=info,query_timing=info}
+    volumes:
+      # Holds the DuckDB files of the default store AND of every replicated
+      # account (data/<id>.db), plus accounts.json.
+      - ./data:/app/data
+      - ./flow_queries.toml.example:/app/flow_queries.toml:ro
+    command: serve --db /app/data/xloka-flow.db --queries /app/flow_queries.toml
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://127.0.0.1:3000/health" ]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # Optional local evaluation MySQL instance with binary logging enabled
+  # Run with: docker compose --profile with-mysql up -d
+  mysql:
+    image: mysql:8.0
+    container_name: xloka-flow-mysql
+    profiles: [ "with-mysql" ]
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: analytics_db
+      MYSQL_USER: replicator
+      MYSQL_PASSWORD: replpassword
+    ports:
+      # Exposed on the loopback interface only — this instance is for local
+      # evaluation and uses well-known passwords.
+      - "127.0.0.1:3306:3306"
+    command:
+      - --server-id=1
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+volumes:
+  mysql_data:
