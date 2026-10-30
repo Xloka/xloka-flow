@@ -132,8 +132,7 @@ pub fn translate_alter(
                             ops.push(DdlOperation {
                                 table: table_name.clone(),
                                 sql: format!(
-                                    "ALTER TABLE \"{}\" DROP COLUMN {}\"{}\"",
-                                    table_name, if_ex, col_name
+                                    "ALTER TABLE \"{table_name}\" DROP COLUMN {if_ex}\"{col_name}\""
                                 ),
                             });
                         }
@@ -262,8 +261,7 @@ pub fn translate_alter(
                             ops.push(DdlOperation {
                                 table: table_name.clone(),
                                 sql: format!(
-                                    "ALTER TABLE \"{}\" RENAME TO \"{}\"",
-                                    table_name, target_name
+                                    "ALTER TABLE \"{table_name}\" RENAME TO \"{target_name}\""
                                 ),
                             });
                         }
@@ -379,7 +377,7 @@ fn column_option_to_duckdb(opt: &ColumnOption) -> Option<String> {
     match opt {
         ColumnOption::NotNull => Some("NOT NULL".to_string()),
         ColumnOption::Null => Some("NULL".to_string()),
-        ColumnOption::Default(expr) => Some(format!("DEFAULT {}", expr)),
+        ColumnOption::Default(expr) => Some(format!("DEFAULT {expr}")),
         ColumnOption::Unique { is_primary, .. } => {
             if *is_primary {
                 Some("PRIMARY KEY".to_string())

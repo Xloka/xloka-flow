@@ -680,7 +680,7 @@ async fn admin_account_sync(
         );
         let _ = conn.execute_batch("INSTALL mysql; LOAD mysql;");
         let escaped_url = sync_mysql_url.replace('\'', "''");
-        let attach_sql = format!("ATTACH '{}' AS sync_mysql_db (TYPE mysql);", escaped_url);
+        let attach_sql = format!("ATTACH '{escaped_url}' AS sync_mysql_db (TYPE mysql);");
         if let Err(e) = conn.execute_batch(&attach_sql) {
             tracing::warn!("Sync failed to attach: {}", e);
             return;
@@ -709,8 +709,7 @@ async fn admin_account_sync(
                 .query_row(
                     &format!(
                         "SELECT COUNT(*) FROM information_schema.tables \
-                         WHERE table_schema = 'main' AND table_name = '{}'",
-                        escaped_tbl
+                         WHERE table_schema = 'main' AND table_name = '{escaped_tbl}'"
                     ),
                     [],
                     |r| r.get(0),
@@ -718,7 +717,7 @@ async fn admin_account_sync(
                 .unwrap_or(0);
             if count > 0 {
                 // Build the explicit allowed column list from the local projected table
-                let pragma_sql = format!("PRAGMA table_info('{}');", escaped_tbl);
+                let pragma_sql = format!("PRAGMA table_info('{escaped_tbl}');");
                 let allowed_cols: Vec<String> = conn
                     .prepare(&pragma_sql)
                     .ok()
@@ -752,8 +751,7 @@ async fn admin_account_sync(
                 );
                 let quoted = table.replace('"', "\"\"");
                 let sync_sql = format!(
-                    "INSERT OR REPLACE INTO main.\"{}\" ({}) SELECT {} FROM sync_mysql_db.\"{}\";",
-                    quoted, quoted_cols, quoted_cols, quoted
+                    "INSERT OR REPLACE INTO main.\"{quoted}\" ({quoted_cols}) SELECT {quoted_cols} FROM sync_mysql_db.\"{quoted}\";"
                 );
                 let _ = conn.execute_batch(&sync_sql);
             }

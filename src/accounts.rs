@@ -134,8 +134,7 @@ pub fn interpolate_env(input: &str) -> Result<String, anyhow::Error> {
         }
         let val = std::env::var(var_name).map_err(|_| {
             anyhow::anyhow!(
-                "environment variable '{}' referenced in configuration is not set",
-                var_name
+                "environment variable '{var_name}' referenced in configuration is not set"
             )
         })?;
         out.push_str(&val);
@@ -364,8 +363,7 @@ impl AccountManager {
                 source_path
             );
             return Err(anyhow::anyhow!(
-                "invalid accounts file '{}': top-level JSON value must be an array",
-                source_path
+                "invalid accounts file '{source_path}': top-level JSON value must be an array"
             ));
         };
 
@@ -397,12 +395,7 @@ impl AccountManager {
                     "Invalid account entry [{}] in '{}': {}",
                     idx, source_path, e
                 );
-                anyhow::anyhow!(
-                    "invalid account entry [{}] in '{}': {}",
-                    idx,
-                    source_path,
-                    e
-                )
+                anyhow::anyhow!("invalid account entry [{idx}] in '{source_path}': {e}")
             })?;
             acc.normalize_defaults();
             accounts.push(acc);

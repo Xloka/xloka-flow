@@ -237,7 +237,7 @@ async fn run_sync(
     let cdc = LiveCdc::new(LiveCdcConfig {
         mysql_url,
         snapshot_mysql_url: snapshot_mysql,
-        checkpoint_path: format!("{}_checkpoint.json", db_path),
+        checkpoint_path: format!("{db_path}_checkpoint.json"),
         db_path: Some(db_path),
         source_id: Some("default".into()),
         filter_databases,

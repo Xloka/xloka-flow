@@ -297,7 +297,7 @@ impl CdcSource for MockCdc {
                             let mut full_row = vec![
                                 Value::Integer(id),
                                 Value::Text(random_name(&mut rng)),
-                                Value::Text(format!("user{}@example.com", id)),
+                                Value::Text(format!("user{id}@example.com")),
                                 Value::Text(now_str()),
                             ];
                             if schema_evolved {
@@ -367,7 +367,7 @@ impl CdcSource for MockCdc {
                     let mut full_after = vec![
                         Value::Integer(id),
                         Value::Text(random_name(&mut rng)),
-                        Value::Text(format!("updated{}@example.com", id)),
+                        Value::Text(format!("updated{id}@example.com")),
                         Value::Text(now_str()),
                     ];
                     if schema_evolved {

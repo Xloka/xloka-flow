@@ -1310,11 +1310,11 @@ async fn test_rest_api_e2e_and_format_negotiation() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
 
-    let base_url = format!("http://{}", local_addr);
+    let base_url = format!("http://{local_addr}");
     let client = reqwest::Client::new();
 
     let health_res = client
-        .get(format!("{}/health", base_url))
+        .get(format!("{base_url}/health"))
         .send()
         .await
         .unwrap();
@@ -1324,7 +1324,7 @@ async fn test_rest_api_e2e_and_format_negotiation() {
     assert_eq!(health_json["version"], env!("CARGO_PKG_VERSION"));
 
     let metrics_res = client
-        .get(format!("{}/metrics", base_url))
+        .get(format!("{base_url}/metrics"))
         .send()
         .await
         .unwrap();
@@ -1335,7 +1335,7 @@ async fn test_rest_api_e2e_and_format_negotiation() {
     assert!(metrics_text.contains("xloka_replication_lag_ms"));
 
     let queries_res = client
-        .get(format!("{}/api/v1/queries", base_url))
+        .get(format!("{base_url}/api/v1/queries"))
         .send()
         .await
         .unwrap();
@@ -1345,8 +1345,7 @@ async fn test_rest_api_e2e_and_format_negotiation() {
 
     let json_res = client
         .get(format!(
-            "{}/api/v1/queries/category_breakdown?format=json",
-            base_url
+            "{base_url}/api/v1/queries/category_breakdown?format=json"
         ))
         .send()
         .await
@@ -1358,8 +1357,7 @@ async fn test_rest_api_e2e_and_format_negotiation() {
 
     let csv_res = client
         .get(format!(
-            "{}/api/v1/queries/category_breakdown?format=csv",
-            base_url
+            "{base_url}/api/v1/queries/category_breakdown?format=csv"
         ))
         .send()
         .await
@@ -1374,8 +1372,7 @@ async fn test_rest_api_e2e_and_format_negotiation() {
 
     let ndjson_res = client
         .get(format!(
-            "{}/api/v1/queries/category_breakdown?format=ndjson",
-            base_url
+            "{base_url}/api/v1/queries/category_breakdown?format=ndjson"
         ))
         .send()
         .await
@@ -1387,8 +1384,7 @@ async fn test_rest_api_e2e_and_format_negotiation() {
 
     let param_res = client
         .get(format!(
-            "{}/api/v1/queries/filtered_category?p1=Groceries",
-            base_url
+            "{base_url}/api/v1/queries/filtered_category?p1=Groceries"
         ))
         .send()
         .await
@@ -1401,7 +1397,7 @@ async fn test_rest_api_e2e_and_format_negotiation() {
 
     // Test restored POST /api/query raw read-only SQL endpoint (plain-text SQL body & JSON body)
     let raw_query_res = client
-        .post(format!("{}/api/query", base_url))
+        .post(format!("{base_url}/api/query"))
         .body("SELECT category, amount FROM transactions ORDER BY id ASC")
         .send()
         .await
@@ -1412,7 +1408,7 @@ async fn test_rest_api_e2e_and_format_negotiation() {
     assert_eq!(raw_query_json["rows"][1]["category"], "Electronics");
 
     let json_query_res = client
-        .post(format!("{}/api/v1/query", base_url))
+        .post(format!("{base_url}/api/v1/query"))
         .json(&serde_json::json!({
             "sql": "SELECT category, amount FROM transactions ORDER BY id ASC"
         }))
@@ -1423,7 +1419,7 @@ async fn test_rest_api_e2e_and_format_negotiation() {
 
     // Mutating SQL on POST /api/query must be rejected with 400 Bad Request
     let bad_raw_res = client
-        .post(format!("{}/api/query", base_url))
+        .post(format!("{base_url}/api/query"))
         .body("DELETE FROM transactions")
         .send()
         .await
@@ -1435,8 +1431,7 @@ async fn test_rest_api_e2e_and_format_negotiation() {
         .store(10, std::sync::atomic::Ordering::Relaxed);
     let fresh_res = client
         .get(format!(
-            "{}/api/v1/queries/category_breakdown?max_staleness_ms=5000",
-            base_url
+            "{base_url}/api/v1/queries/category_breakdown?max_staleness_ms=5000"
         ))
         .send()
         .await
@@ -1445,8 +1440,7 @@ async fn test_rest_api_e2e_and_format_negotiation() {
 
     let stale_res = client
         .get(format!(
-            "{}/api/v1/queries/category_breakdown?max_staleness_ms=5",
-            base_url
+            "{base_url}/api/v1/queries/category_breakdown?max_staleness_ms=5"
         ))
         .send()
         .await
@@ -1454,7 +1448,7 @@ async fn test_rest_api_e2e_and_format_negotiation() {
     assert_eq!(stale_res.status(), reqwest::StatusCode::TOO_EARLY);
 
     let not_found_res = client
-        .get(format!("{}/api/v1/queries/does_not_exist", base_url))
+        .get(format!("{base_url}/api/v1/queries/does_not_exist"))
         .send()
         .await
         .unwrap();
@@ -1610,7 +1604,7 @@ async fn test_account_data_is_queryable_via_api() {
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     let client = reqwest::Client::new();
-    let base_url = format!("http://{}", local_addr);
+    let base_url = format!("http://{local_addr}");
 
     let default_res = client
         .get(format!("{base_url}/api/v1/query/account_totals"))
@@ -1844,7 +1838,7 @@ async fn test_data_api_key_and_account_api_key_coexist() {
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     let client = reqwest::Client::new();
-    let base_url = format!("http://{}", local_addr);
+    let base_url = format!("http://{local_addr}");
 
     let unauth = client
         .get(format!("{base_url}/api/v1/query/account_totals"))
@@ -1969,7 +1963,7 @@ async fn test_ws_realtime_streaming_and_subscriptions() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    let ws_url = format!("ws://{}/api/v1/ws", local_addr);
+    let ws_url = format!("ws://{local_addr}/api/v1/ws");
     let (mut ws_stream, _) = tokio_tungstenite::connect_async(&ws_url)
         .await
         .expect("WebSocket handshake failed");
@@ -1994,7 +1988,7 @@ async fn test_ws_realtime_streaming_and_subscriptions() {
             assert_eq!(sub_id, "sub_q1");
             assert_eq!(mode, "query");
         }
-        other => panic!("Expected Subscribed, got: {:?}", other),
+        other => panic!("Expected Subscribed, got: {other:?}"),
     }
 
     let snapshot_text = next_text_frame(&mut ws_stream).await;
@@ -2010,7 +2004,7 @@ async fn test_ws_realtime_streaming_and_subscriptions() {
             assert_eq!(query_name, "user_balances");
             assert_eq!(batch_id, 0);
         }
-        other => panic!("Expected QuerySnapshot, got: {:?}", other),
+        other => panic!("Expected QuerySnapshot, got: {other:?}"),
     }
 
     let insert_alice = RowOp::Insert {
@@ -2041,7 +2035,7 @@ async fn test_ws_realtime_streaming_and_subscriptions() {
             assert!(data_str.contains("Alice"));
             assert!(data_str.contains("150"));
         }
-        other => panic!("Expected updated QuerySnapshot, got: {:?}", other),
+        other => panic!("Expected updated QuerySnapshot, got: {other:?}"),
     }
 
     let sub_deltas_cmd = WsClientMessage::SubscribeTableDeltas {
@@ -2062,7 +2056,7 @@ async fn test_ws_realtime_streaming_and_subscriptions() {
             assert_eq!(sub_id, "sub_d1");
             assert_eq!(mode, "table_deltas");
         }
-        other => panic!("Expected Subscribed delta, got: {:?}", other),
+        other => panic!("Expected Subscribed delta, got: {other:?}"),
     }
 
     let insert_bob = RowOp::Insert {
@@ -2107,7 +2101,7 @@ where
         match msg {
             Message::Text(t) => return t.to_string(),
             Message::Ping(_) | Message::Pong(_) => continue,
-            other => panic!("Expected text frame, got: {:?}", other),
+            other => panic!("Expected text frame, got: {other:?}"),
         }
     }
 }
@@ -2145,14 +2139,14 @@ async fn test_ws_query_param_api_key_auth() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    let unauth_url = format!("ws://{}/api/v1/ws", local_addr);
+    let unauth_url = format!("ws://{local_addr}/api/v1/ws");
     let unauth_res = tokio_tungstenite::connect_async(&unauth_url).await;
     assert!(
         unauth_res.is_err(),
         "WebSocket upgrade without api_key must be rejected"
     );
 
-    let auth_url = format!("ws://{}/api/v1/ws?api_key=ws_secret_key", local_addr);
+    let auth_url = format!("ws://{local_addr}/api/v1/ws?api_key=ws_secret_key");
     let (mut ws_stream, _) = tokio_tungstenite::connect_async(&auth_url)
         .await
         .expect("WebSocket handshake with ?api_key= should succeed");
@@ -2211,7 +2205,9 @@ async fn test_account_snapshot_and_bulk_load() {
     );
 
     // Save and load persistence
-    manager.save_persisted(&[account.clone()]).unwrap();
+    manager
+        .save_persisted(std::slice::from_ref(&account))
+        .unwrap();
     let loaded = manager.load_persisted();
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].id, "tenant_snap_1");

@@ -145,7 +145,7 @@ fn summarise_statement(stmt: &sqlparser::ast::Statement) -> String {
         Statement::Drop { .. } => "DROP".into(),
         Statement::AlterTable { .. } => "ALTER TABLE".into(),
         Statement::Truncate { .. } => "TRUNCATE".into(),
-        other => format!("{:?}", other).chars().take(40).collect::<String>(),
+        other => format!("{other:?}").chars().take(40).collect::<String>(),
     }
 }
 

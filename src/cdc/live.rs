@@ -521,10 +521,7 @@ impl LiveCdc {
                                 MyVal::Float(f) => f.to_string(),
                                 MyVal::Double(d) => d.to_string(),
                                 MyVal::Date(y, m, d, h, mn, s, _) => {
-                                    format!(
-                                        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-                                        y, m, d, h, mn, s
-                                    )
+                                    format!("{y:04}-{m:02}-{d:02} {h:02}:{mn:02}:{s:02}")
                                 }
                                 MyVal::Time(is_neg, d, h, m, s, _) => {
                                     let sign = if is_neg { "-" } else { "" };
@@ -643,8 +640,8 @@ impl LiveCdc {
                                     );
                                     continue;
                                 }
-                                for row_result in ev.rows(tm) {
-                                    if let Ok((_, Some(after_row))) = row_result {
+                                for (_, after_row_opt) in ev.rows(tm).flatten() {
+                                    if let Some(after_row) = after_row_opt {
                                         // Invariant: always parse binlog rows with the FULL MySQL schema,
                                         // then project to the allowed columns.
                                         let full_vals =
@@ -698,8 +695,10 @@ impl LiveCdc {
                                     );
                                     continue;
                                 }
-                                for row_result in ev.rows(tm) {
-                                    if let Ok((Some(before_row), Some(after_row))) = row_result {
+                                for (before_opt, after_opt) in ev.rows(tm).flatten() {
+                                    if let (Some(before_row), Some(after_row)) =
+                                        (before_opt, after_opt)
+                                    {
                                         let full_before =
                                             parse_row_vec(before_row, &full_schema.columns);
                                         let full_after =
@@ -755,8 +754,8 @@ impl LiveCdc {
                                     );
                                     continue;
                                 }
-                                for row_result in ev.rows(tm) {
-                                    if let Ok((Some(before_row), _)) = row_result {
+                                for (before_opt, _) in ev.rows(tm).flatten() {
+                                    if let Some(before_row) = before_opt {
                                         let full_before =
                                             parse_row_vec(before_row, &full_schema.columns);
                                         let before_vals = proj.project_row(&full_before);
@@ -1066,7 +1065,7 @@ fn value_from_mysql(val: mysql_async::Value, unsigned64: bool) -> Value {
         MyVal::Float(f) => Value::Float(f as f64),
         MyVal::Double(d) => Value::Float(d),
         MyVal::Date(y, m, d, h, mn, s, _ms) => {
-            let text = format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, m, d, h, mn, s);
+            let text = format!("{y:04}-{m:02}-{d:02} {h:02}:{mn:02}:{s:02}");
             Value::Text(text)
         }
         MyVal::Time(is_neg, d, h, m, s, _ms) => {

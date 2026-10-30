@@ -197,10 +197,10 @@ impl TableSchema {
         let pk_clause = if !pks.is_empty() {
             let quoted_pks = pks
                 .iter()
-                .map(|k| format!("\"{}\"", k))
+                .map(|k| format!("\"{k}\""))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!(",\n    PRIMARY KEY ({})", quoted_pks)
+            format!(",\n    PRIMARY KEY ({quoted_pks})")
         } else {
             String::new()
         };

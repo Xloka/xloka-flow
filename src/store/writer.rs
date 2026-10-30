@@ -223,7 +223,7 @@ impl StoreWriter {
     fn local_column_order(&self, table: &str) -> anyhow::Result<Vec<String>> {
         // PRAGMA takes a string literal — escape embedded quotes.
         let escaped = table.replace('\'', "''");
-        let pragma_sql = format!("PRAGMA table_info('{}');", escaped);
+        let pragma_sql = format!("PRAGMA table_info('{escaped}');");
         let mut stmt = self.conn.prepare(&pragma_sql)?;
         let mut rows = stmt.query([])?;
 
@@ -422,8 +422,7 @@ impl StoreWriter {
                                     info!("StoreWriter: Bulk loading '{}' from {}", table, csv_path);
                                     let escaped_path = csv_path.replace('\'', "''");
                                     let sql = format!(
-                                        "COPY \"{}\" FROM '{}' (FORMAT CSV, HEADER TRUE, NULLSTR '\\N')",
-                                        table, escaped_path
+                                        "COPY \"{table}\" FROM '{escaped_path}' (FORMAT CSV, HEADER TRUE, NULLSTR '\\N')"
                                     );
                                     if let Err(e) = self.conn.execute_batch(&sql) {
                                         error!("Bulk load error for {}: {e}", table);
@@ -765,8 +764,7 @@ impl StoreWriter {
                         let pk_col = pk_cols[0];
                         let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
                         let delete_sql = format!(
-                            "DELETE FROM \"{}\" WHERE \"{}\" IN ({})",
-                            table_name, pk_col, placeholders
+                            "DELETE FROM \"{table_name}\" WHERE \"{pk_col}\" IN ({placeholders})"
                         );
                         let mut params: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len());
                         for pk in chunk {
@@ -782,7 +780,7 @@ impl StoreWriter {
                         for pk in chunk {
                             let mut and_parts = Vec::new();
                             for (i, pk_col) in pk_cols.iter().enumerate() {
-                                and_parts.push(format!("\"{}\" = ?", pk_col));
+                                and_parts.push(format!("\"{pk_col}\" = ?"));
                                 if let Some(v) = pk.get(i) {
                                     params.push(v as &dyn ToSql);
                                 }
