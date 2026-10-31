@@ -38,6 +38,8 @@ jobs:
           fi
           echo "version=${VER}" >> "$GITHUB_OUTPUT"
           echo "clean_version=${VER#v}" >> "$GITHUB_OUTPUT"
+          IMAGE="$(echo "ghcr.io/${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -64,8 +66,8 @@ jobs:
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
           tags: |
-            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
-            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.clean_version }}
-            ghcr.io/${{ github.repository }}:latest
+            ${{ steps.version.outputs.image }}:${{ steps.version.outputs.version }}
+            ${{ steps.version.outputs.image }}:${{ steps.version.outputs.clean_version }}
+            ${{ steps.version.outputs.image }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
