@@ -12,7 +12,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Must match `rust-version` in Cargo.toml and the builder image in the Dockerfile.
   RUST_VERSION: "1.88"
 
 jobs:
@@ -49,6 +48,9 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+
+      - name: Verify docs.rs build (no-default-features)
+        run: cargo doc --no-default-features --no-deps
 
       - name: Test
         run: cargo test --all-targets

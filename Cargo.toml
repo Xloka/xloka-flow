@@ -1,14 +1,12 @@
 [package]
 name = "xloka-flow"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
-# MSRV dictated by the dependency graph (time 0.3.55 needs 1.88, duckdb/arrow
-# need 1.85). Keep in sync with the builder image in the Dockerfile.
 rust-version = "1.88"
 description = "High-performance Analytics DB and API Server using DuckDB and MySQL CDC"
 authors = ["xloka"]
-repository = "https://github.com/xloka/xloka-flow"
-license = "MIT OR Apache-2.0"
+repository = "https://github.com/Xloka/xloka-flow"
+license = "MIT"
 categories = ["command-line-utilities", "database"]
 keywords = ["duckdb", "mysql", "cdc", "replication", "analytics"]
 readme = "README.md"
@@ -21,6 +19,16 @@ exclude = [
     "postman/",
 ]
 
+[package.metadata.docs.rs]
+no-default-features = true
+all-features = false
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+
+[features]
+default = ["bundled"]
+bundled = ["duckdb/bundled"]
+
 [[bin]]
 name = "xloka-flow"
 path = "src/main.rs"
@@ -32,16 +40,15 @@ tokio = { version = "1", features = ["full"] }
 futures-util = { version = "0.3", features = ["sink"] }
 futures = "0.3"
 
-# Analytical Engine (bundled = compiles DuckDB from source, no system lib needed)
-duckdb = { version = "1", features = ["bundled"] }
+# Analytical Engine (bundled by default; disabled on docs.rs so doc builds do not compile C++)
+duckdb = { version = "1", default-features = false }
 
-# MySQL async driver — pinned to 0.34/0.32 to prevent breaking binlog stream traits
-# and maintain stable binlog event payload deserialization across MySQL 5.7 and 8.0+.
-mysql_async = { version = "0.34", features = ["binlog"] }
-mysql_common = "0.32"
+# MySQL async driver with first-party binlog replication support
+mysql_async = { version = "0.37", features = ["binlog"] }
+mysql_common = "0.37"
 
-# SQL parsing — pinned to 0.52 for stable DDL AST representations in schema evolution
-sqlparser = "0.52"
+# SQL parsing (SELECT-only guard and DDL AST translation)
+sqlparser = "0.62"
 
 # Data structures & serialization
 indexmap = { version = "2", features = ["serde"] }

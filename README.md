@@ -63,6 +63,12 @@ xloka-flow sync \
   --db "analytics.db" \
   --tables "orders,users" \
   --exclude-tables "audit_logs"
+
+# Optional: Offload the initial consistent-snapshot backfill onto a Read Replica!
+xloka-flow sync \
+  --mysql "mysql://user:pass@primary:3306/mydb" \
+  --snapshot-mysql "mysql://user:pass@read-replica:3306/mydb" \
+  --db "analytics.db"
 ```
 
 That is it. The daemon will continuously replicate your transactional database into `analytics.db` until the process is terminated. You can immediately open `analytics.db` in your preferred SQL client and execute analytical queries.
@@ -106,9 +112,15 @@ curl -s "http://localhost:3000/api/v1/query/account_summary?format=csv"
 # Reject with HTTP 425 if replication lag exceeds 500ms
 curl -s "http://localhost:3000/api/v1/query/account_summary?max_staleness_ms=500"
 
-# Target a specific replicated account via query param or API key
+# Target a specific replicated account via query param, x-api-key, or Authorization: Bearer
 curl -s "http://localhost:3000/api/v1/query/account_summary?account_id=<id>"
 curl -s -H "x-api-key: xk_..." "http://localhost:3000/api/v1/query/account_summary"
+curl -s -H "Authorization: Bearer xk_..." "http://localhost:3000/api/v1/query/account_summary"
+
+# Ad-hoc read-only SQL (v0.1.0 compatible POST /api/query or POST /api/v1/query)
+curl -s -X POST "http://localhost:3000/api/query" \
+  -H "Authorization: Bearer xk_..." \
+  -d "SELECT COUNT(*) AS total FROM orders;"
 ```
 
 ### Real-Time WebSocket Streaming
@@ -134,6 +146,7 @@ For hosted deployments (Railway, Fly, Render, Kubernetes, or a single VM), mount
     "id": "acc_acme",
     "name": "Acme Production",
     "mysql_url": "mysql://rep:${ACME_MYSQL_PW}@db.acme.internal:3306/shop",
+    "snapshot_mysql_url": "mysql://rep:${ACME_MYSQL_PW}@replica.acme.internal:3306/shop",
     "api_key": "xk_live_acme",
     "status": "active",
     "filters": {
@@ -154,6 +167,20 @@ For hosted deployments (Railway, Fly, Render, Kubernetes, or a single VM), mount
 
 - **Sizing rule of thumb:** `RAM ≈ 150 MB base + N_accounts × account_memory_limit` (e.g., 8 accounts × `256MB` fits comfortably inside a 2 GB container).
 - **Per-account query manifests:** Drop `queries/<account_id>.toml` (or set `XLOKA__QUERY_MANIFEST_DIR`) to give each tenant its own analytical SQL endpoints alongside the global manifest.
+
+### Technical Details & Consistent Snapshot Backfill
+
+- **Zero-Lock Initial Snapshot (`CONSISTENT SNAPSHOT`)**: On first run (when no `_xloka_checkpoint` entry exists yet), `xloka-flow` opens a `START TRANSACTION WITH CONSISTENT SNAPSHOT`, records the exact `(File, Position)` coordinates via `SHOW MASTER STATUS` / `SHOW BINARY LOG STATUS`, streams the initial backfill via DuckDB `COPY ... FROM (FORMAT CSV)`, and commits the initial checkpoint atomically. Passing `--snapshot-mysql` (or `snapshot_mysql_url` per account) offloads this entire snapshot phase to a read-only MySQL replica so your primary experiences zero backfill load.
+- **Row-Level Binlog CDC & Primary-Key Coalescing**: After the snapshot completes, `xloka-flow` connects to the binary log stream at the recorded coordinates and coalesces `INSERT`, `UPDATE` (including chained primary-key updates), and `DELETE` events per primary key before flushing via DuckDB transactions and native `Appender` batches.
+
+### Upgrading from v0.1.0 to v0.2.x (Migration Notes)
+
+1. **Query Endpoints (`POST /api/query` + Declarative `GET /api/v1/query/<name>`)**:
+   - `v0.1.0`'s ad-hoc `POST /api/query` (and `POST /api/v1/query`) accepting raw `SELECT` SQL or `{"sql": "SELECT ..."}` with `Authorization: Bearer xk_...` remains **fully supported**.
+   - `v0.2.x` adds declarative named queries (`GET /api/v1/query/<name>`) defined in `flow_queries.toml` (with JSON, NDJSON, and CSV format negotiation and `?max_staleness_ms=` guards) plus real-time WebSocket subscriptions (`/api/v1/ws`).
+2. **Authentication Headers**:
+   - All data-plane endpoints (`/api/query`, `/api/v1/query/*`, `/api/v1/ws`) accept **`Authorization: Bearer <key>`**, **`x-api-key: <key>`**, or **`?api_key=<key>`**.
+   - Admin endpoints (`/api/admin/*`) accept `Authorization: Bearer <admin_token>` or `x-admin-token: <admin_token>`, and now **fail closed** (`503 Service Unavailable`) if `XLOKA__ADMIN_TOKEN` / `--admin-token` is unset (whereas `v0.1.0` fell back to `"secret"`).
 
 ### Deploying the Server
 Because the daemon is compiled into a single static binary, deployment is straightforward with `systemd` or Docker:
@@ -177,4 +204,8 @@ WantedBy=multi-user.target
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE) or [MIT License](LICENSE) at your option.
+This project is licensed under the **MIT License**.
+
+You are free to use, modify, distribute, and build commercial products on top of this software without any restrictions. We believe in true open-source freedom.
+
+See the [LICENSE](LICENSE) file for details.

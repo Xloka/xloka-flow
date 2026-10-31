@@ -1,9 +1,11 @@
 services:
   xloka-flow:
-    image: ghcr.io/xloka/xloka-flow:v0.2.1
+    image: ghcr.io/xloka/xloka-flow:${XLOKA_VERSION:-v0.2.2}
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        VERSION: ${XLOKA_VERSION:-latest}
     container_name: xloka-flow
     restart: unless-stopped
     ports:

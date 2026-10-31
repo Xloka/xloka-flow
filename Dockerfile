@@ -1,50 +1,46 @@
 # ==============================================================================
-# xloka-flow Multi-Stage Containerfile
+# xloka-flow Containerfile
 # High-performance MySQL CDC -> DuckDB Analytical Engine & API Daemon
+#
+# Uses the prebuilt release binary published to GitHub Releases.
+# Override the release tag at build time with:
+#   docker build --build-arg VERSION=v0.2.2 -t xloka-flow .
 # ==============================================================================
 
-# ── Stage 1: Build binary ─────────────────────────────────────────────────────
-# The MSRV is dictated by the locked dependency graph (e.g. `time 0.3.55` needs
-# 1.88, `duckdb`/`arrow` need 1.85). Bumping this without bumping the lock file
-# breaks the image build.
-FROM rust:1.88-bookworm AS builder
-WORKDIR /app
+FROM debian:bookworm-slim
 
-# Install build prerequisites for DuckDB bundled C++ compilation
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    cmake \
-    ca-certificates \
-    pkg-config \
-    libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+ARG VERSION=latest
+LABEL org.opencontainers.image.title="xloka-flow" \
+    org.opencontainers.image.version="${VERSION}" \
+    org.opencontainers.image.source="https://github.com/Xloka/xloka-flow" \
+    org.opencontainers.image.licenses="MIT"
 
-# Copy dependency manifests and build script
-COPY Cargo.toml Cargo.lock build.rs ./
-
-# Create dummy source tree to cache compiled dependencies
-RUN mkdir -p src && \
-    echo "fn main() {}" > src/main.rs && \
-    echo "pub fn dummy() {}" > src/lib.rs && \
-    cargo build --release --bin xloka-flow && \
-    rm -rf src target/release/deps/xloka_flow* target/release/deps/libxloka_flow* target/release/.fingerprint/xloka-flow* target/release/xloka-flow*
-
-# Copy real source code
-COPY src ./src
-
-# Build the release binary with LTO
-RUN cargo build --release --bin xloka-flow && \
-    strip target/release/xloka-flow
-
-# ── Stage 2: Minimal Runtime ──────────────────────────────────────────────────
-FROM debian:bookworm-slim AS runtime
-
-# Install CA certificates for TLS MySQL/HTTPS connections and curl for healthchecks
+# Install CA certificates, timezone data, curl (for healthchecks + download),
+# and xz-utils (to extract the release archive).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     tzdata \
     curl \
+    xz-utils \
     && rm -rf /var/lib/apt/lists/*
+
+# Download and install the prebuilt xloka-flow binary from GitHub Releases
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    case "$arch" in \
+    x86_64)  target="x86_64-unknown-linux-gnu" ;; \
+    aarch64|arm64) target="aarch64-unknown-linux-gnu" ;; \
+    *) echo "Unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    if [ "$VERSION" = "latest" ]; then \
+    url="https://github.com/Xloka/xloka-flow/releases/latest/download/xloka-flow-${target}.tar.xz"; \
+    else \
+    url="https://github.com/Xloka/xloka-flow/releases/download/${VERSION}/xloka-flow-${target}.tar.xz"; \
+    fi; \
+    curl -fsSL "$url" -o /tmp/xloka-flow.tar.xz; \
+    tar -xJf /tmp/xloka-flow.tar.xz --strip-components=1 -C /usr/local/bin "xloka-flow-${target}/xloka-flow"; \
+    chmod +x /usr/local/bin/xloka-flow; \
+    rm -f /tmp/xloka-flow.tar.xz
 
 # Security: Run as dedicated non-root user
 RUN groupadd -g 10001 xloka && \
@@ -54,9 +50,6 @@ WORKDIR /app
 
 # Create persistent data and configuration directories
 RUN mkdir -p /app/data && chown -R xloka:xloka /app
-
-# Copy compiled binary from builder
-COPY --from=builder /app/target/release/xloka-flow /usr/local/bin/xloka-flow
 
 # Copy default query manifest example
 COPY flow_queries.toml.example /app/flow_queries.toml.example

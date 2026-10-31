@@ -33,6 +33,7 @@ jobs:
         run: |
           cargo fmt --all -- --check
           cargo clippy --all-targets -- -D warnings
+          cargo doc --no-default-features --no-deps
 
       - name: Publish to crates.io
         env:

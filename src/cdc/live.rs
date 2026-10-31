@@ -1192,9 +1192,9 @@ pub fn extract_ddl_statements_for_test(sql: &str) -> Vec<ExtractedDdl> {
 }
 
 fn split_object_name(name: &sqlparser::ast::ObjectName) -> Option<(Option<String>, String)> {
-    let last = name.0.last()?.value.clone();
+    let last = name.0.last()?.as_ident()?.value.clone();
     let db = if name.0.len() >= 2 {
-        Some(name.0[name.0.len() - 2].value.clone())
+        Some(name.0[name.0.len() - 2].as_ident()?.value.clone())
     } else {
         None
     };
@@ -1216,8 +1216,8 @@ fn extract_ddl_statements(sql: &str) -> Vec<DdlStatement> {
     if let Ok(ast) = Parser::parse_sql(&dialect, sql) {
         for stmt in ast {
             match stmt {
-                Statement::AlterTable { name, .. } => {
-                    if let Some((db, table)) = split_object_name(&name) {
+                Statement::AlterTable(alter_table) => {
+                    if let Some((db, table)) = split_object_name(&alter_table.name) {
                         out.push(DdlStatement {
                             kind: DdlKind::Alter,
                             db,
@@ -1249,8 +1249,8 @@ fn extract_ddl_statements(sql: &str) -> Vec<DdlStatement> {
                         }
                     }
                 }
-                Statement::Truncate { table_names, .. } => {
-                    for target in table_names {
+                Statement::Truncate(truncate) => {
+                    for target in truncate.table_names {
                         if let Some((db, table)) = split_object_name(&target.name) {
                             out.push(DdlStatement {
                                 kind: DdlKind::Truncate,

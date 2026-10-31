@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 /// Every CDC source (live MySQL or mock) implements this trait.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait CdcSource: Send + 'static {
     /// Stream CDC events into `tx` until shutdown is signalled or an error occurs.

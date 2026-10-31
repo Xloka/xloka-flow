@@ -54,13 +54,18 @@ pub fn translate_alter(
 
     for stmt in ast {
         match stmt {
-            Statement::AlterTable {
+            Statement::AlterTable(sqlparser::ast::AlterTable {
                 name, operations, ..
-            } => {
+            }) => {
                 let table_name = target
                     .or(current)
                     .map(|s| s.table_name.clone())
-                    .or_else(|| name.0.last().map(|ident| ident.value.clone()))
+                    .or_else(|| {
+                        name.0
+                            .last()
+                            .and_then(|part| part.as_ident())
+                            .map(|ident| ident.value.clone())
+                    })
                     .unwrap_or_else(|| "unknown".into());
 
                 for op in operations {
@@ -110,31 +115,33 @@ pub fn translate_alter(
                             });
                         }
                         AlterTableOperation::DropColumn {
-                            column_name,
+                            column_names,
                             if_exists,
                             ..
                         } => {
-                            let col_name = column_name.value.clone();
-                            if let Some(cur) = current {
-                                if !cur
-                                    .columns
-                                    .iter()
-                                    .any(|c| c.name.eq_ignore_ascii_case(&col_name))
-                                {
-                                    debug!(
-                                        "Skipping DROP COLUMN `{}` on `{}` because column was not present in projected schema.",
-                                        col_name, table_name
-                                    );
-                                    continue;
+                            for column_name in column_names {
+                                let col_name = column_name.value.clone();
+                                if let Some(cur) = current {
+                                    if !cur
+                                        .columns
+                                        .iter()
+                                        .any(|c| c.name.eq_ignore_ascii_case(&col_name))
+                                    {
+                                        debug!(
+                                            "Skipping DROP COLUMN `{}` on `{}` because column was not present in projected schema.",
+                                            col_name, table_name
+                                        );
+                                        continue;
+                                    }
                                 }
+                                let if_ex = if if_exists { "IF EXISTS " } else { "" };
+                                ops.push(DdlOperation {
+                                    table: table_name.clone(),
+                                    sql: format!(
+                                        "ALTER TABLE \"{table_name}\" DROP COLUMN {if_ex}\"{col_name}\""
+                                    ),
+                                });
                             }
-                            let if_ex = if if_exists { "IF EXISTS " } else { "" };
-                            ops.push(DdlOperation {
-                                table: table_name.clone(),
-                                sql: format!(
-                                    "ALTER TABLE \"{table_name}\" DROP COLUMN {if_ex}\"{col_name}\""
-                                ),
-                            });
                         }
                         AlterTableOperation::RenameColumn {
                             old_column_name,
@@ -251,11 +258,16 @@ pub fn translate_alter(
                             });
                         }
                         AlterTableOperation::RenameTable {
-                            table_name: new_name,
+                            table_name: new_name_kind,
                         } => {
+                            let new_name = match new_name_kind {
+                                sqlparser::ast::RenameTableNameKind::As(n)
+                                | sqlparser::ast::RenameTableNameKind::To(n) => n,
+                            };
                             let target_name = new_name
                                 .0
                                 .last()
+                                .and_then(|part| part.as_ident())
                                 .map(|i| i.value.clone())
                                 .unwrap_or_default();
                             ops.push(DdlOperation {
@@ -267,7 +279,7 @@ pub fn translate_alter(
                         }
                         // Index / constraint / table-option operations do not change the
                         // row layout, so they are irrelevant for the analytical mirror.
-                        AlterTableOperation::AddConstraint(_)
+                        AlterTableOperation::AddConstraint { .. }
                         | AlterTableOperation::DropConstraint { .. }
                         | AlterTableOperation::AlterColumn { .. } => {
                             debug!(
@@ -295,7 +307,7 @@ pub fn translate_alter(
                 ..
             } => {
                 for name in names {
-                    if let Some(tbl) = name.0.last() {
+                    if let Some(tbl) = name.0.last().and_then(|part| part.as_ident()) {
                         let if_ex = if if_exists { "IF EXISTS " } else { "" };
                         ops.push(DdlOperation {
                             table: tbl.value.clone(),
@@ -378,13 +390,8 @@ fn column_option_to_duckdb(opt: &ColumnOption) -> Option<String> {
         ColumnOption::NotNull => Some("NOT NULL".to_string()),
         ColumnOption::Null => Some("NULL".to_string()),
         ColumnOption::Default(expr) => Some(format!("DEFAULT {expr}")),
-        ColumnOption::Unique { is_primary, .. } => {
-            if *is_primary {
-                Some("PRIMARY KEY".to_string())
-            } else {
-                Some("UNIQUE".to_string())
-            }
-        }
+        ColumnOption::PrimaryKey(_) => Some("PRIMARY KEY".to_string()),
+        ColumnOption::Unique(_) => Some("UNIQUE".to_string()),
         _ => None,
     }
 }
@@ -407,7 +414,7 @@ pub fn sql_type_to_duckdb(data_type: &DataType) -> DuckDbType {
         DataType::BigInt(_) | DataType::Int8(_) | DataType::Int16 | DataType::Int128 => {
             DuckDbType::BigInt
         }
-        DataType::Float(_) | DataType::Real | DataType::Double | DataType::DoublePrecision => {
+        DataType::Float(_) | DataType::Real | DataType::Double(_) | DataType::DoublePrecision => {
             DuckDbType::Double
         }
         DataType::Decimal(exact_info) | DataType::Numeric(exact_info) => {
@@ -423,7 +430,7 @@ pub fn sql_type_to_duckdb(data_type: &DataType) -> DuckDbType {
         | DataType::Char(_)
         | DataType::Character(_)
         | DataType::String(_)
-        | DataType::Enum(_)
+        | DataType::Enum(..)
         | DataType::Set(_)
         | DataType::Nvarchar(_) => DuckDbType::Varchar,
         DataType::Timestamp(_, _) | DataType::Datetime(_) => DuckDbType::Timestamp,
@@ -452,7 +459,7 @@ pub fn apply_ddl_to_source_schema(raw_sql: &str, schema: &mut TableSchema) -> an
         .map_err(|e| anyhow::anyhow!("failed to parse MySQL DDL '{raw_sql}': {e}"))?;
 
     for stmt in ast {
-        if let Statement::AlterTable { operations, .. } = stmt {
+        if let Statement::AlterTable(sqlparser::ast::AlterTable { operations, .. }) = stmt {
             for op in operations {
                 match op {
                     AlterTableOperation::AddColumn {
@@ -482,8 +489,10 @@ pub fn apply_ddl_to_source_schema(raw_sql: &str, schema: &mut TableSchema) -> an
                         };
                         schema.columns.insert(idx, col);
                     }
-                    AlterTableOperation::DropColumn { column_name, .. } => {
-                        schema.columns.retain(|c| c.name != column_name.value);
+                    AlterTableOperation::DropColumn { column_names, .. } => {
+                        for column_name in column_names {
+                            schema.columns.retain(|c| c.name != column_name.value);
+                        }
                     }
                     AlterTableOperation::RenameColumn {
                         old_column_name,
